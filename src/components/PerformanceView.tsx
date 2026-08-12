@@ -1,8 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import type { PerformanceSnapshot } from "@/lib/performance";
-import { SiteNav } from "./SiteNav";
 
 function pct(n: number | null | undefined, digits = 1): string {
   if (n == null || !Number.isFinite(n)) return "—";
@@ -14,7 +14,7 @@ function num(n: number | null | undefined, digits = 1): string {
   return n.toFixed(digits);
 }
 
-export function PerformanceView() {
+export function PerformanceView({ embedded = false }: { embedded?: boolean }) {
   const [data, setData] = useState<PerformanceSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -44,19 +44,42 @@ export function PerformanceView() {
   const model = data?.model;
 
   return (
-    <div className="dashboard">
-      <header className="topbar">
-        <div className="brand-block">
-          <p className="brand">MintPicks</p>
-          <p className="tagline">Performance — ROI, Brier, CLV, calibration</p>
-          <SiteNav />
-        </div>
-        <div className="header-controls">
+    <div className={embedded ? "manage-perf" : "dashboard manage-shell"}>
+      {!embedded && (
+        <header className="topbar">
+          <div className="brand-block">
+            <p className="brand">MintPicks</p>
+            <p className="tagline">Management · Performance</p>
+            <nav className="site-nav" aria-label="Management">
+              <Link href="/management" className="nav-link">
+                Users & payments
+              </Link>
+              <Link href="/performance" className="nav-link active">
+                Perf
+              </Link>
+            </nav>
+          </div>
+          <div className="header-controls">
+            <button type="button" className="refresh-btn" onClick={load} disabled={pending}>
+              {pending ? "Loading…" : "Refresh"}
+            </button>
+            <form method="POST" action="/api/auth/logout">
+              <input type="hidden" name="scope" value="mgmt" />
+              <button type="submit" className="refresh-btn">
+                Log out
+              </button>
+            </form>
+          </div>
+        </header>
+      )}
+
+      {embedded && (
+        <div className="header-controls" style={{ marginBottom: "0.75rem" }}>
           <button type="button" className="refresh-btn" onClick={load} disabled={pending}>
-            {pending ? "Loading…" : "Refresh"}
+            {pending ? "Loading…" : "Refresh perf"}
           </button>
         </div>
-      </header>
+      )}
 
       <div className={`status-banner ${data ? "live" : ""}`}>
         <div>
@@ -89,8 +112,8 @@ export function PerformanceView() {
         <section className="info-block">
           <h2 className="info-title">Paper book</h2>
           <p className="info-copy">
-            Signals the scanner logged for training (not just saved picks). Graded {paper?.graded ?? "—"} ·
-            open {paper?.open ?? "—"}
+            Signals the scanner logged for training (not just saved picks). Graded{" "}
+            {paper?.graded ?? "—"} · open {paper?.open ?? "—"}
           </p>
           <p className="info-copy">
             Win rate {pct(paper?.winRate)} · Brier {num(paper?.brier, 3)} · avg CLV{" "}

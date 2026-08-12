@@ -43,7 +43,7 @@ const SECTIONS = [
     title: "Edges",
     body: [
       "The Edges board scans moneyline, spread, and total markets. Each card shows the best book price, model probability, edge %, and a short rationale.",
-      "Use Live vs Upcoming to switch between in-progress games and the next slate. Open the breakdown for book prices, ESPN context, weather, and (for MLB) Baseball Savant Statcast.",
+      "Use Live vs Upcoming on Edges for in-progress game results vs the next slate. Live pulls ESPN only (no paid odds APIs). Open the breakdown for book prices, ESPN context, weather, and (for MLB) Baseball Savant Statcast. Props stay upcoming-only.",
     ],
     href: "/",
     linkLabel: "Open Edges",
@@ -52,18 +52,10 @@ const SECTIONS = [
     title: "Props (MLB)",
     body: [
       "Props focuses on three markets: player to record a hit (Over 0.5 hits), player to record a home run (Over 0.5 HR), and first-inning over/under.",
-      "Lines come from The Odds API event markets. A light Statcast prior is blended with book consensus so soft prices stand out. Props often appear closer to first pitch — use Rescan if the board looks thin.",
+      "Each card shows a suggested % — the model’s chance that side wins the bet — plus model edge vs the book. Upcoming props auto-pull twice daily (ODDS_TIMEZONE): noon uses paid credits (Odds API / Parlay, ESPN fallback); 4pm refreshes from ESPN only. Live props pull ESPN in-play hits & HRs on demand (no credits). Between upcoming pulls, refresh reuses that cache. 1st-inning totals still need The Odds API.",
     ],
     href: "/props",
     linkLabel: "Open Props",
-  },
-  {
-    title: "Calendar",
-    body: [
-      "Calendar lays out games by day across leagues and ranks them by model edge, so you can scan a week or month without jumping sport tabs.",
-    ],
-    href: "/calendar",
-    linkLabel: "Open Calendar",
   },
   {
     title: "Picks & grading",
@@ -86,21 +78,13 @@ const SECTIONS = [
     title: "Self-learning",
     body: [
       "Graded saved picks and the paper book (signals the scanner showed) feed daily training: Elo, calibration buckets, and — only after enough samples — blend-weight / edge-threshold retunes.",
-      "Conviction boosts wait until calibration looks reliable. Check Performance for ROI, Brier, CLV, and bucket health.",
+      "Conviction boosts wait until calibration looks reliable. Model performance (ROI, Brier, CLV) is visible in Management login → Perf.",
     ],
-  },
-  {
-    title: "Performance",
-    body: [
-      "The Perf tab tracks win rate, flat-stake ROI, Brier score, closing-line value from the paper book, and model calibration by probability band.",
-    ],
-    href: "/performance",
-    linkLabel: "Open Performance",
   },
   {
     title: "Data sources",
     body: [
-      "Odds: The Odds API (US books including FanDuel). Responses are cached ~60s; Edges/Best/Suggested/Calendar share one scored slate per sport so rescans don’t burn quota.",
+      "Odds: The Odds API when keys have credits. Next: ParlayAPI (PARLAY_API_KEY), then SportsGameOdds (SGO_API_KEY), then ESPN’s public scoreboard. Paid odds (Odds API / Parlay / SportsGameOdds) pull at most 12×/day — once per hour from 10am–9pm local (ODDS_TIMEZONE). Refresh and tab changes reuse that hour’s disk cache and do not spend credits. Live Edges uses ESPN only for in-play ML / spread / total. Live Props uses ESPN for in-play hits & HRs (no credits). ESPN has no credit cost. Finals for grading use Odds API scores when available, otherwise ESPN. Out-of-season leagues stay hidden until 1 week before opening day.",
       "Context: ESPN public scoreboard, injuries, team history, and schedules (rest).",
       "MLB: Baseball Savant (team + player expected stats), MLB Stats API probable pitchers, box scores for prop grading.",
       "Weather: Weather Underground when WU_API_KEY is set; otherwise Open-Meteo.",
@@ -116,14 +100,14 @@ const SECTIONS = [
   {
     title: "Management",
     body: [
-      "Use Management login on the Sign in page to open the admin console. It is separate from the research app — users, plans, and payment settings only.",
+      "Use Management login on the Sign in page to open the admin console. It is separate from the research app — users, payment settings, and the Perf dashboard.",
       "User and payment data are stored locally under data/. Live Stripe Checkout can be wired once keys are saved.",
     ],
   },
   {
     title: "Setup notes",
     body: [
-      "Add ODDS_API_KEY to .env.local for live odds. Optional: WU_API_KEY for Weather Underground.",
+      "Add ODDS_API_KEY to .env.local for The Odds API (optional ODDS_API_KEY_2, … for failover). Optional PARLAY_API_KEY (ParlayAPI) and SGO_API_KEY (SportsGameOdds) when Odds API is out. Optional: WU_API_KEY for Weather Underground.",
       "To lock sign-in with a password later, set AUTH_PASSWORD (and optionally AUTH_USERNAME + AUTH_SECRET). For now, Sign in needs no credentials.",
       "Picks, paper book, users, payments, and learned model state are stored locally under data/ on this machine.",
     ],

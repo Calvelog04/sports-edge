@@ -7,8 +7,9 @@ import {
   sessionCookieOptions,
   userIsPaid,
 } from "@/lib/auth";
-import { addPaymentEvent, readPaymentSettings, toPublicSettings } from "@/lib/payments";
-import { getUserById, updateUser, userHasPaidAccess } from "@/lib/users";
+import { readPaymentSettings, toPublicSettings } from "@/lib/payments";
+import { venmoPayUrl } from "@/lib/stripe-billing";
+import { getUserById, userHasPaidAccess } from "@/lib/users";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +29,7 @@ export async function GET(request: NextRequest) {
   }
   const settings = toPublicSettings(await readPaymentSettings());
   const pro = settings.plans.find((p) => p.id === "pro") ?? settings.plans[1];
+  const monthly = pro?.priceMonthlyCents ?? 2000;
   return NextResponse.json({
     user: {
       id: ctx.user.id,
@@ -47,43 +49,31 @@ export async function GET(request: NextRequest) {
           currency: settings.currency,
         }
       : null,
+    billing: {
+      ready: settings.ready,
+      provider: settings.provider,
+      venmoConfigured: settings.venmoConfigured,
+      venmoBusinessUsername: settings.venmoBusinessUsername,
+      venmoDisplayName: settings.venmoDisplayName,
+      venmoPayUrl: settings.venmoConfigured
+        ? venmoPayUrl(
+            settings.venmoBusinessUsername,
+            monthly,
+            `MintPicks Pro · ${ctx.user.email}`,
+          )
+        : null,
+    },
     sessionPaid: userIsPaid(ctx.session),
   });
 }
 
-/** Mark the current user as paid (Pro) and refresh the session cookie. */
-export async function POST(request: NextRequest) {
-  const ctx = await requireUser(request);
-  if (!ctx) {
-    return NextResponse.json({ error: "User login required" }, { status: 401 });
-  }
-
-  const settings = await readPaymentSettings();
-  const pro = settings.plans.find((p) => p.id === "pro");
-  const amount = pro?.priceMonthlyCents ?? 2000;
-
-  const user = await updateUser(ctx.user.id, { plan: "pro" });
-  await addPaymentEvent({
-    userId: user.id,
-    email: user.email,
-    planId: "pro",
-    amountCents: amount,
-    currency: settings.currency || "usd",
-    status: "paid",
-    note: "Pro unlock from account paywall",
-  }).catch(() => undefined);
-
-  const token = await createSessionToken("user", { userId: user.id, plan: "pro" });
-  const res = NextResponse.json({
-    ok: true,
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      plan: user.plan,
-      paid: true,
+/** Legacy endpoint — real card checkout is POST /api/billing/checkout. */
+export async function POST() {
+  return NextResponse.json(
+    {
+      error:
+        "Use card checkout or Venmo from the account page. Free unlocks are disabled.",
     },
-  });
-  res.cookies.set(cookieName("user"), token, sessionCookieOptions());
-  return res;
+    { status: 400 },
+  );
 }

@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useState, useTransition } from "react";
 import type { ManagedUser, UserPlan, UserRole, UserStatus } from "@/lib/users";
 import type { PaymentEvent, PaymentPlan, PaymentSettingsPublic } from "@/lib/payments";
+import { PerformanceView } from "./PerformanceView";
 
-type Tab = "users" | "payments";
+type Tab = "users" | "payments" | "performance";
 
 function money(cents: number, currency = "usd"): string {
   return new Intl.NumberFormat("en-US", {
@@ -45,6 +46,8 @@ export function ManagementView() {
   const [manualEmail, setManualEmail] = useState("");
   const [manualPlanId, setManualPlanId] = useState("pro");
   const [manualAmount, setManualAmount] = useState("20");
+  const [venmoUsername, setVenmoUsername] = useState("");
+  const [venmoDisplayName, setVenmoDisplayName] = useState("");
 
   const load = useCallback(() => {
     startTransition(async () => {
@@ -79,6 +82,8 @@ export function ManagementView() {
         setMode(pJson.settings.mode);
         setCurrency(pJson.settings.currency);
         setPlans(pJson.settings.plans);
+        setVenmoUsername(pJson.settings.venmoBusinessUsername || "");
+        setVenmoDisplayName(pJson.settings.venmoDisplayName || "");
         setSecretKey("");
         setWebhookSecret("");
       } catch (e) {
@@ -173,7 +178,11 @@ export function ManagementView() {
             publishableKey: pubKey,
             secretKey: secretKey || undefined,
             webhookSecret: webhookSecret || undefined,
+            venmoBusinessUsername: venmoUsername,
+            venmoDisplayName,
             plans,
+            successUrl: "/account?checkout=success",
+            cancelUrl: "/account?checkout=cancel",
           }),
         });
         const body = await res.json().catch(() => ({}));
@@ -200,16 +209,39 @@ export function ManagementView() {
             amountCents: Math.round((Number.isFinite(dollars) ? dollars : 0) * 100),
             currency,
             status: "paid",
+            unlockUser: true,
             note: "Manual payment recorded in Management",
           }),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.error ?? "Record failed");
         setManualEmail("");
-        flash("Payment recorded");
+        flash(body.unlocked ? "Payment recorded · Pro unlocked" : "Payment recorded");
         load();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Record failed");
+      }
+    });
+  }
+
+  function confirmVenmo(eventId: string) {
+    startTransition(async () => {
+      setError(null);
+      try {
+        const res = await fetch("/api/management/payments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            confirmEventId: eventId,
+            note: "Venmo payment confirmed — Pro unlocked",
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error ?? "Confirm failed");
+        flash(body.unlocked ? "Venmo confirmed · Pro unlocked" : "Venmo marked paid");
+        load();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Confirm failed");
       }
     });
   }
@@ -266,10 +298,19 @@ export function ManagementView() {
         >
           Payments
         </button>
+        <button
+          type="button"
+          className={tab === "performance" ? "timing-chip active" : "timing-chip"}
+          onClick={() => setTab("performance")}
+        >
+          Perf
+        </button>
       </div>
 
       {error && <p className="error-banner">{error}</p>}
       {notice && <p className="save-pick-msg">{notice}</p>}
+
+      {tab === "performance" && <PerformanceView embedded />}
 
       {tab === "users" && (
         <div className="manage-grid">
@@ -424,8 +465,9 @@ export function ManagementView() {
           <section className="info-block">
             <h2 className="info-title">Payment center</h2>
             <p className="info-copy">
-              Configure Stripe (or leave provider off). Keys stay on this machine under{" "}
-              <code>data/payments.json</code>. Live checkout can be wired once keys are set.
+              Debit/credit cards run through Stripe Checkout. Set your Stripe payout bank to the
+              same account tied to Venmo Business (or transfer Stripe payouts into Venmo). Direct
+              Venmo payments use your business @username below.
             </p>
             <div className="manage-form">
               <label className="login-label">
@@ -435,8 +477,8 @@ export function ManagementView() {
                   value={provider}
                   onChange={(e) => setProvider(e.target.value as "none" | "stripe")}
                 >
-                  <option value="none">None (manual only)</option>
-                  <option value="stripe">Stripe</option>
+                  <option value="none">None (manual / Venmo only)</option>
+                  <option value="stripe">Stripe (cards)</option>
                 </select>
               </label>
               <label className="login-label">
@@ -464,7 +506,7 @@ export function ManagementView() {
                   className="login-input"
                   value={pubKey}
                   onChange={(e) => setPubKey(e.target.value)}
-                  placeholder="pk_test_…"
+                  placeholder="pk_test_… or pk_live_…"
                   autoComplete="off"
                 />
               </label>
@@ -493,11 +535,38 @@ export function ManagementView() {
                   autoComplete="off"
                 />
               </label>
+              <label className="login-label">
+                Venmo Business username
+                <input
+                  className="login-input"
+                  value={venmoUsername}
+                  onChange={(e) => setVenmoUsername(e.target.value)}
+                  placeholder="YourBusiness (no @)"
+                  autoComplete="off"
+                />
+              </label>
+              <label className="login-label">
+                Venmo display name (optional)
+                <input
+                  className="login-input"
+                  value={venmoDisplayName}
+                  onChange={(e) => setVenmoDisplayName(e.target.value)}
+                  placeholder="MintPicks Business"
+                />
+              </label>
               <p className="signal-meta">
                 Status:{" "}
                 {settings.ready
-                  ? "Ready for Stripe checkout wiring"
-                  : "Not ready — set provider to Stripe and add keys + a paid plan"}
+                  ? "Card checkout ready"
+                  : "Cards not ready — set provider to Stripe and add keys + a paid plan"}
+                {settings.venmoConfigured
+                  ? ` · Venmo @${settings.venmoBusinessUsername}`
+                  : " · Venmo not set"}
+              </p>
+              <p className="signal-meta">
+                Webhook endpoint: <code>/api/billing/webhook</code> (event:{" "}
+                <code>checkout.session.completed</code>). Prefer{" "}
+                <code>STRIPE_*</code> in <code>.env.local</code> for live secrets.
               </p>
               <button type="button" className="login-submit" disabled={pending} onClick={savePayments}>
                 Save payment settings
@@ -561,7 +630,8 @@ export function ManagementView() {
           <section className="info-block">
             <h2 className="info-title">Record payment</h2>
             <p className="info-copy">
-              Log a manual payment until Stripe Checkout / webhooks are connected.
+              Log a payment received outside checkout (e.g. Venmo already received). This unlocks
+              Pro for a matching user email.
             </p>
             <div className="manage-form">
               <label className="login-label">
@@ -616,10 +686,12 @@ export function ManagementView() {
                   <tr>
                     <th>When</th>
                     <th>Email</th>
+                    <th>Method</th>
                     <th>Plan</th>
                     <th>Amount</th>
                     <th>Status</th>
                     <th>Note</th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
@@ -629,15 +701,28 @@ export function ManagementView() {
                         {new Date(ev.createdAt).toLocaleString()}
                       </td>
                       <td>{ev.email}</td>
+                      <td>{ev.method ?? "manual"}</td>
                       <td>{ev.planId}</td>
                       <td>{money(ev.amountCents, ev.currency)}</td>
                       <td>{ev.status}</td>
                       <td className="signal-meta">{ev.note}</td>
+                      <td>
+                        {ev.status === "pending" && ev.method === "venmo" && (
+                          <button
+                            type="button"
+                            className="refresh-btn"
+                            disabled={pending}
+                            onClick={() => confirmVenmo(ev.id)}
+                          >
+                            Confirm Venmo
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                   {events.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="muted">
+                      <td colSpan={8} className="muted">
                         No payment events yet.
                       </td>
                     </tr>

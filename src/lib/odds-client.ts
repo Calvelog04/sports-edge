@@ -1,6 +1,7 @@
 import type { SportKey } from "./types";
+import { defaultInSeasonSport, getInSeasonSportOptions } from "./sports-season";
 
-/** Live leagues only — no demo sports. */
+/** All known leagues (season filter applied via getActiveSportOptions). */
 export const SPORT_OPTIONS: Array<{ key: SportKey; label: string }> = [
   { key: "baseball_mlb", label: "MLB" },
   { key: "americanfootball_nfl", label: "NFL" },
@@ -10,4 +11,12 @@ export const SPORT_OPTIONS: Array<{ key: SportKey; label: string }> = [
   { key: "icehockey_nhl", label: "NHL" },
 ];
 
-export const DEFAULT_SPORT: SportKey = "baseball_mlb";
+/** Sports currently in season (or within 1 week of start). */
+export function getActiveSportOptions(
+  now = new Date(),
+): Array<{ key: SportKey; label: string }> {
+  const active = getInSeasonSportOptions(now);
+  return active.length > 0 ? active : SPORT_OPTIONS.slice(0, 1);
+}
+
+export const DEFAULT_SPORT: SportKey = defaultInSeasonSport();

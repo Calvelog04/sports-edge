@@ -1,34 +1,35 @@
 "use client";
 
-import { useCallback, useEffect, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import type { BestPicksResponse, SportKey } from "@/lib/types";
-import { SPORT_OPTIONS } from "@/lib/odds-client";
-import type { GameTiming } from "@/lib/timing";
+import { matchesBoardSearch } from "@/lib/board-search";
+import { getActiveSportOptions } from "@/lib/odds-client";
 import { BestCard } from "./BestCard";
-import { OddsQuotaLabel } from "./OddsQuotaLabel";
+import { BoardIntro } from "./BoardIntro";
+import { BoardSearch } from "./BoardSearch";
+import { BoardStatus } from "./BoardStatus";
 import { SiteNav } from "./SiteNav";
 import { SportPicker } from "./SportPicker";
 import { TimingSwitch } from "./TimingSwitch";
 
 type SportFilter = SportKey | "all";
 
-const SPORT_FILTERS: Array<{ key: SportFilter; label: string }> = [
-  { key: "all", label: "All" },
-  ...SPORT_OPTIONS,
-];
-
 export function BestView() {
+  const sportFilters = useMemo<Array<{ key: SportFilter; label: string }>>(
+    () => [{ key: "all", label: "All" }, ...getActiveSportOptions()],
+    [],
+  );
   const [sport, setSport] = useState<SportFilter>("all");
-  const [timing, setTiming] = useState<GameTiming>("upcoming");
+  const [query, setQuery] = useState("");
   const [data, setData] = useState<BestPicksResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
-  const load = useCallback((nextSport: SportFilter, nextTiming: GameTiming) => {
+  const load = useCallback((nextSport: SportFilter) => {
     startTransition(async () => {
       setError(null);
       try {
-        const res = await fetch(`/api/best?sport=${nextSport}&timing=${nextTiming}`, {
+        const res = await fetch(`/api/best?sport=${nextSport}&timing=upcoming`, {
           cache: "no-store",
         });
         if (!res.ok) {
@@ -43,8 +44,15 @@ export function BestView() {
   }, []);
 
   useEffect(() => {
-    load(sport, timing);
-  }, [sport, timing, load]);
+    load(sport);
+  }, [sport, load]);
+
+  const visible = useMemo(() => {
+    const list = data?.picks ?? [];
+    return list.filter((p) =>
+      matchesBoardSearch(query, p.homeTeam, p.awayTeam, p.selection),
+    );
+  }, [data, query]);
 
   const minWin = data ? (data.thresholds.minWinProb * 100).toFixed(0) : "55";
   const minEdge = data ? data.thresholds.minEdgePct.toFixed(1) : "1.5";
@@ -54,54 +62,64 @@ export function BestView() {
       <header className="topbar">
         <div className="brand-block">
           <p className="brand">MintPicks</p>
-          <p className="tagline">Best picks — high win% and sportsbook edge</p>
+          <p className="tagline">Best · high win% + book edge</p>
           <SiteNav />
         </div>
         <div className="header-controls">
-          <TimingSwitch value={timing} onChange={setTiming} />
-          <SportPicker sports={SPORT_FILTERS} value={sport} onChange={setSport} />
+          <TimingSwitch />
+          <SportPicker sports={sportFilters} value={sport} onChange={setSport} />
           <button
             type="button"
             className="refresh-btn"
-            onClick={() => load(sport, timing)}
+            onClick={() => load(sport)}
             disabled={pending}
           >
-            {pending ? "Scanning…" : "Rescan"}
+            {pending ? "Updating…" : "Refresh view"}
           </button>
         </div>
       </header>
 
-      <div className={`status-banner ${data?.mode === "live" ? "live" : ""}`}>
-        <div>
-          <span className="mode-pill">BEST</span>
-          <span className="meta">
-            {data ? `${data.picks.length} picks · win ≥${minWin}% · edge ≥${minEdge}%` : "Loading…"}
-            {data ? (
-              <>
-                {" · "}
-                <OddsQuotaLabel quota={data.oddsQuota} />
-              </>
-            ) : null}
-          </span>
-        </div>
-      </div>
+      <BoardIntro board="best" />
+
+      <BoardSearch
+        value={query}
+        onChange={setQuery}
+        placeholder="Search teams…"
+        matchCount={visible.length}
+        totalCount={data?.picks.length ?? 0}
+      />
+
+      <BoardStatus
+        pill="BEST"
+        countLabel={
+          data
+            ? `${visible.length} picks · win ≥${minWin}% · edge ≥${minEdge}%`
+            : "Loading…"
+        }
+        generatedAt={data?.generatedAt}
+      />
 
       {error && <p className="error-banner">{error}</p>}
 
       <section className="results" aria-live="polite">
-        {pending && !data && <p className="muted">Finding picks that clear both bars…</p>}
+        {pending && !data && <p className="muted">Loading best picks…</p>}
         {data && data.picks.length === 0 && (
           <div className="empty-state">
-            <p className="empty-title">No best picks right now</p>
+            <p className="empty-title">No Best picks yet</p>
             <p className="muted">
-              Nothing on this slate has both a strong model win probability and a real edge vs the
-              books. Try Edges for price value, Suggested for win leans, or another league/timing.
+              Both bars have to clear (win ≥{minWin}% and edge ≥{minEdge}%). Check Suggested or
+              Edges.
             </p>
           </div>
         )}
-
+        {data && data.picks.length > 0 && visible.length === 0 && (
+          <div className="empty-state">
+            <p className="empty-title">No matching picks</p>
+            <p className="muted">Clear search or try another team name.</p>
+          </div>
+        )}
         <div className="edge-grid">
-          {data?.picks.map((pick) => (
+          {visible.map((pick) => (
             <BestCard key={pick.id} pick={pick} />
           ))}
         </div>

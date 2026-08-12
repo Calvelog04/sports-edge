@@ -75,6 +75,8 @@ export interface OddsEvent {
   home_team: string;
   away_team: string;
   bookmakers: Bookmaker[];
+  /** ESPN / derived phase for live vs upcoming boards. */
+  gamePhase?: "scheduled" | "in_progress" | "final";
 }
 
 export interface EspnCompetitor {
@@ -249,6 +251,7 @@ export interface EdgeOpportunity {
   commenceTime: string;
   homeTeam: string;
   awayTeam: string;
+  gamePhase?: "scheduled" | "in_progress" | "final";
   weather?: WeatherSnapshot | null;
   espn?: EspnEventSummary | null;
   history?: MatchHistoryContext | null;
@@ -299,6 +302,8 @@ export interface OddsQuotaInfo {
   used: number | null;
   last: number | null;
   updatedAt: string | null;
+  activeKeySlot?: number | null;
+  keyCount?: number;
 }
 
 export interface PropsResponse {
@@ -309,6 +314,8 @@ export interface PropsResponse {
   warnings: string[];
   eventsScanned: number;
   oddsQuota?: OddsQuotaInfo;
+  /** True when the current props slot was served from disk cache. */
+  boardCached?: boolean;
 }
 
 export interface EdgesResponse {
@@ -323,6 +330,10 @@ export interface EdgesResponse {
   slateCached?: boolean;
   /** Model min edge used when tightening the wide slate for Edges. */
   edgeMinPct?: number;
+  /** Odds line source for status UI. */
+  linesSource?: "odds-api" | "parlay" | "sportsgameodds" | "espn";
+  /** True when underlying odds provider served from its schedule/disk cache. */
+  linesCached?: boolean;
 }
 
 /** Model's highest-confidence win lean (moneyline) for a game. */

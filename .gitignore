@@ -48,6 +48,8 @@ next-env.d.ts
 /data/paper-book.json
 /data/elo-sync.json
 /data/odds-quota.json
+/data/odds-keys-state.json
+/data/odds-disk-cache.json
 /data/users.json
 /data/payments.json
 /data/payment-events.json

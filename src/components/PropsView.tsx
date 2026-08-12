@@ -2,8 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import type { PropOpportunity, PropsResponse } from "@/lib/types";
-import type { GameTiming } from "@/lib/timing";
-import { OddsQuotaLabel } from "./OddsQuotaLabel";
+import { matchesBoardSearch } from "@/lib/board-search";
+import { formatShortWhen, nextPropsRefreshAt } from "@/lib/odds-window";
+import { LIVE_PROPS_ENABLED, type GameTiming } from "@/lib/timing";
+import { BoardIntro } from "./BoardIntro";
+import { BoardSearch } from "./BoardSearch";
+import { BoardStatus } from "./BoardStatus";
 import { PropCard } from "./PropCard";
 import { SiteNav } from "./SiteNav";
 import { TimingSwitch } from "./TimingSwitch";
@@ -13,6 +17,7 @@ type PropFilter = "all" | "hit" | "home_run" | "first_inning";
 export function PropsView() {
   const [timing, setTiming] = useState<GameTiming>("upcoming");
   const [filter, setFilter] = useState<PropFilter>("all");
+  const [query, setQuery] = useState("");
   const [data, setData] = useState<PropsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -21,7 +26,9 @@ export function PropsView() {
     startTransition(async () => {
       setError(null);
       try {
-        const res = await fetch(`/api/props?timing=${nextTiming}`, { cache: "no-store" });
+        const res = await fetch(`/api/props?timing=${nextTiming}`, {
+          cache: "no-store",
+        });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body.error ?? `Request failed (${res.status})`);
@@ -38,58 +45,100 @@ export function PropsView() {
   }, [timing, load]);
 
   const visible = useMemo(() => {
-    const list = data?.opportunities ?? [];
-    if (filter === "all") return list;
-    return list.filter((o) => o.category === filter);
-  }, [data, filter]);
+    let list = data?.opportunities ?? [];
+    if (filter !== "all") list = list.filter((o) => o.category === filter);
+    return list.filter((o) =>
+      matchesBoardSearch(query, o.homeTeam, o.awayTeam, o.player, o.label, o.selection),
+    );
+  }, [data, filter, query]);
 
   const counts = useMemo(() => {
-    const list = data?.opportunities ?? [];
+    const list = (data?.opportunities ?? []).filter((o) =>
+      matchesBoardSearch(query, o.homeTeam, o.awayTeam, o.player, o.label, o.selection),
+    );
     return {
       all: list.length,
       hit: list.filter((o) => o.category === "hit").length,
       home_run: list.filter((o) => o.category === "home_run").length,
       first_inning: list.filter((o) => o.category === "first_inning").length,
     };
-  }, [data]);
+  }, [data, query]);
+
+  const lockedUntil = formatShortWhen(nextPropsRefreshAt());
+  const isLive = timing === "live";
 
   return (
     <div className="dashboard">
       <header className="topbar">
         <div className="brand-block">
           <p className="brand">MintPicks</p>
-          <p className="tagline">MLB prop bets — hits, home runs, 1st inning</p>
+          <p className="tagline">
+            {isLive ? "Props · live ESPN" : "Props · daily MLB slate"}
+          </p>
           <SiteNav />
         </div>
         <div className="header-controls">
-          <TimingSwitch value={timing} onChange={setTiming} />
+          <TimingSwitch
+            value={timing}
+            onChange={setTiming}
+            enabled={LIVE_PROPS_ENABLED}
+            liveTitle="In-play MLB player props via ESPN (hits & HRs)"
+          />
           <button
             type="button"
             className="refresh-btn"
             onClick={() => load(timing)}
             disabled={pending}
           >
-            {pending ? "Scanning…" : "Rescan props"}
+            {pending ? "Updating…" : isLive ? "Refresh" : "Refresh view"}
           </button>
         </div>
       </header>
 
-      <div className={`status-banner ${data?.mode === "live" ? "live" : ""}`}>
-        <div>
-          <span className="mode-pill">{data?.mode === "live" ? "PROPS" : "WAITING"}</span>
-          <span className="meta">
-            {data
-              ? `${data.eventsScanned} games scanned · ${data.opportunities.length} edges`
-              : "Loading MLB prop markets…"}
-            {data ? (
-              <>
-                {" · "}
-                <OddsQuotaLabel quota={data.oddsQuota} />
-              </>
-            ) : null}
-          </span>
-        </div>
-      </div>
+      <BoardIntro board="props" />
+
+      <BoardSearch
+        value={query}
+        onChange={setQuery}
+        placeholder="Search players or teams…"
+        matchCount={visible.length}
+        totalCount={data?.opportunities.length ?? 0}
+      />
+
+      {isLive ? (
+        <p className="props-lock-banner">
+          Live props · ESPN · no credits · refresh anytime
+        </p>
+      ) : (
+        <p className="props-lock-banner">
+          Today&apos;s props slate
+          {data?.boardCached ? " · cached" : " · loaded"}
+          {" · "}
+          auto noon credits / 4pm ESPN · next {lockedUntil}
+        </p>
+      )}
+
+      <BoardStatus
+        pill={isLive ? "LIVE PROPS" : data?.mode === "live" ? "PROPS" : "WAITING"}
+        kind={isLive ? "live" : "props"}
+        countLabel={
+          data
+            ? `${data.eventsScanned} games · ${visible.length} props · hits & HRs`
+            : "Loading…"
+        }
+        generatedAt={data?.generatedAt}
+        freshness={
+          isLive
+            ? data
+              ? "fresh"
+              : null
+            : data?.boardCached
+              ? "cached"
+              : data
+                ? "fresh"
+                : null
+        }
+      />
 
       <div className="timing-switch" role="tablist" aria-label="Prop type">
         {(
@@ -115,13 +164,30 @@ export function PropsView() {
       {error && <p className="error-banner">{error}</p>}
 
       <section className="results" aria-live="polite">
-        {pending && !data && <p className="muted">Pulling FanDuel/DK player props…</p>}
+        {pending && !data && (
+          <p className="muted">
+            {isLive ? "Loading live ESPN props…" : "Loading today’s props slate…"}
+          </p>
+        )}
         {data && visible.length === 0 && (
           <div className="empty-state">
-            <p className="empty-title">No prop edges yet</p>
+            <p className="empty-title">
+              {query.trim()
+                ? "No matching props"
+                : data.mode === "unavailable"
+                  ? isLive
+                    ? "No live props right now"
+                    : "Props slate not ready"
+                  : "No props in this filter"}
+            </p>
             <p className="muted">
-              Looking for +EV on player to record a hit, player to hit a home run, and first-inning
-              over/unders. Props often appear closer to first pitch — try Rescan later.
+              {query.trim()
+                ? "Clear search or try another player/team name."
+                : isLive
+                  ? "ESPN hits & HRs for in-play games. Try again once games are underway and books still have prop markets up."
+                  : data.mode === "unavailable"
+                    ? `Auto props: noon (credits) and 4pm (ESPN). Next opportunity ${lockedUntil}. Hits & HRs when lines are up; 1st-inning needs Odds API.`
+                    : "Try All, or wait until books post prop markets closer to first pitch (next refresh at 4pm ESPN or tomorrow noon)."}
             </p>
           </div>
         )}

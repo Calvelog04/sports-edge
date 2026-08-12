@@ -37,4 +37,12 @@ Without `ODDS_API_KEY`, the UI shows a setup message and **zero games**.
 ## Pages
 
 - `/` — edge list for one pro league
-- `/calendar` — month / week calendar of live edges
+- `/suggested` — highest model win% moneylines
+- `/best` — high win% + edge overlap
+- `/props` — MLB props
+- `/picks` — saved picks
+- `/info` — how it works
+- `/login` — guest / user / management sign-in
+- `/account` — Pro paywall for user accounts
+- `/management` — admin users, payments & Perf
+- `/performance` — model performance (management login only)

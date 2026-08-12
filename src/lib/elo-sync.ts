@@ -7,33 +7,11 @@ import {
   teamEloKey,
   type ModelState,
 } from "./model-state";
-import { SPORT_OPTIONS } from "./odds-client";
-import type { SportKey } from "./types";
+import { getActiveSportOptions } from "./odds-client";
+import { fetchScoresForSport, scoreNamesMatch } from "./scores";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const SYNC_META = path.join(DATA_DIR, "elo-sync.json");
-
-interface ScoreEvent {
-  id: string;
-  sport_key: string;
-  completed: boolean;
-  home_team: string;
-  away_team: string;
-  scores: Array<{ name: string; score: string }> | null;
-}
-
-function normalize(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
-}
-
-function namesMatch(a: string, b: string): boolean {
-  const na = normalize(a);
-  const nb = normalize(b);
-  if (!na || !nb) return false;
-  if (na === nb || na.includes(nb) || nb.includes(na)) return true;
-  const aSet = new Set(na.split(" "));
-  return nb.split(" ").filter((t) => aSet.has(t) && t.length > 2).length >= 2;
-}
 
 function updateElo(
   state: ModelState,
@@ -55,19 +33,8 @@ function updateElo(
   state.teamElo[teamEloKey(sport, awayTeam)] = awayElo - delta;
 }
 
-async function fetchScores(sport: SportKey, daysFrom = 3): Promise<ScoreEvent[]> {
-  const key = process.env.ODDS_API_KEY?.trim();
-  if (!key) return [];
-  const url = `https://api.the-odds-api.com/v4/sports/${sport}/scores?apiKey=${encodeURIComponent(key)}&daysFrom=${daysFrom}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return [];
-  const { recordOddsQuota } = await import("./odds-quota");
-  await recordOddsQuota(res.headers);
-  return (await res.json()) as ScoreEvent[];
-}
-
 /**
- * Rebuild team Elo from all completed Odds API scores (not just saved picks).
+ * Rebuild team Elo from completed scores (Odds API when available, else ESPN scoreboard).
  * Runs at most once per local day.
  */
 export async function syncEloFromScores(force = false): Promise<{
@@ -86,7 +53,6 @@ export async function syncEloFromScores(force = false): Promise<{
     // continue
   }
 
-  // Start from current Elo; apply each completed game once via seen set
   let metaSeen: string[] = [];
   try {
     const meta = JSON.parse(await fs.readFile(SYNC_META, "utf8")) as { seen?: string[] };
@@ -97,14 +63,14 @@ export async function syncEloFromScores(force = false): Promise<{
   const seenSet = new Set(metaSeen);
 
   let updated = 0;
-  for (const sport of SPORT_OPTIONS.map((s) => s.key)) {
-    const events = await fetchScores(sport, 3);
+  for (const sport of getActiveSportOptions().map((s) => s.key)) {
+    const events = await fetchScoresForSport(sport, 3);
     for (const ev of events) {
       if (!ev.completed || !ev.scores?.length) continue;
-      const key = `${ev.sport_key}::${ev.id}`;
+      const key = `${ev.sport_key || sport}::${ev.id}`;
       if (seenSet.has(key)) continue;
-      const home = ev.scores.find((s) => namesMatch(s.name, ev.home_team));
-      const away = ev.scores.find((s) => namesMatch(s.name, ev.away_team));
+      const home = ev.scores.find((s) => scoreNamesMatch(s.name, ev.home_team));
+      const away = ev.scores.find((s) => scoreNamesMatch(s.name, ev.away_team));
       if (!home || !away) continue;
       const hs = Number(home.score);
       const as = Number(away.score);

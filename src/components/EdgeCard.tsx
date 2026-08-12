@@ -3,14 +3,33 @@
 import { useState, useTransition } from "react";
 import type { EdgeOpportunity, ModelSignal } from "@/lib/types";
 import { formatAmerican, formatEdge, formatKickoff, marketLabel } from "@/lib/format";
+import { useSavedPicks } from "@/hooks/useSavedPicks";
 
 export function EdgeCard({ opportunity }: { opportunity: EdgeOpportunity }) {
   const [open, setOpen] = useState(false);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  const { isSaved, markSaved } = useSavedPicks();
   const top = opportunity.signals[0];
 
+  function identityFor(signal: ModelSignal) {
+    return {
+      eventId: opportunity.eventId,
+      market: signal.market,
+      selection: signal.selection,
+      line: signal.line,
+      homeTeam: opportunity.homeTeam,
+      awayTeam: opportunity.awayTeam,
+      commenceTime: opportunity.commenceTime,
+    };
+  }
+
   function saveSignal(signal: ModelSignal) {
+    const identity = identityFor(signal);
+    if (isSaved(identity)) {
+      setSavedMsg("Already saved in Picks");
+      return;
+    }
     startTransition(async () => {
       setSavedMsg(null);
       try {
@@ -31,18 +50,22 @@ export function EdgeCard({ opportunity }: { opportunity: EdgeOpportunity }) {
             book: signal.bestBook,
             modelProb: signal.modelProb,
             edgePct: signal.edgePct,
+            boardSource: "edges",
           }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body.error ?? "Could not save pick");
         }
+        markSaved(identity);
         setSavedMsg("Saved to Picks");
       } catch (e) {
         setSavedMsg(e instanceof Error ? e.message : "Save failed");
       }
     });
   }
+
+  const topSaved = top ? isSaved(identityFor(top)) : false;
 
   return (
     <article className="edge-card">
@@ -66,121 +89,131 @@ export function EdgeCard({ opportunity }: { opportunity: EdgeOpportunity }) {
             {top.line != null ? ` ${top.line > 0 ? "+" : ""}${top.line}` : ""}
           </p>
           <p className="pick-meta">
-            {formatAmerican(top.bestPrice)} at {top.bestBook} · EV {formatEdge(top.evPct)} ·{" "}
-            {(top.confidence * 100).toFixed(0)}% confidence
-            {opportunity.kellyPct != null && opportunity.kellyPct > 0
-              ? ` · Kelly ${(opportunity.kellyPct * 100).toFixed(2)}% BR`
-              : ""}
+            {formatAmerican(top.bestPrice)} at {top.bestBook} · EV {formatEdge(top.evPct)}
           </p>
           <button
             type="button"
-            className="save-pick-btn"
-            disabled={pending}
+            className={`save-pick-btn${topSaved ? " is-saved" : ""}`}
+            disabled={pending || topSaved}
             onClick={() => saveSignal(top)}
           >
-            {pending ? "Saving…" : "Save pick"}
+            {pending ? "Saving…" : topSaved ? "Saved pick" : "Save pick"}
           </button>
-          {savedMsg && <p className="save-pick-msg">{savedMsg}</p>}
+          {(savedMsg || topSaved) && (
+            <p className="save-pick-msg">{savedMsg ?? "Already saved in Picks"}</p>
+          )}
         </div>
       )}
 
-      {opportunity.weather?.outdoorRelevant && (
-        <p className="weather-line">
-          {opportunity.weather.condition} · {opportunity.weather.tempF}°F · wind{" "}
-          {opportunity.weather.windMph} mph
-          {opportunity.weather.humidity != null ? ` · humidity ${opportunity.weather.humidity}%` : ""}
-          {" · "}
-          {opportunity.weather.location}
-          {opportunity.weather.source === "weather-underground"
-            ? " · Data provided by Weather Underground"
-            : opportunity.weather.source
-              ? ` · via ${opportunity.weather.source}`
-              : ""}
-        </p>
-      )}
-
-      {(opportunity.history?.home || opportunity.history?.away) && (
-        <p className="history-line">
-          ESPN history:{" "}
-          {[
-            opportunity.history?.away
-              ? `${opportunity.history.away.abbreviation || opportunity.awayTeam} ${
-                  opportunity.history.away.seasonRecord ??
-                  (opportunity.history.away.historicalWinPct != null
-                    ? `${(opportunity.history.away.historicalWinPct * 100).toFixed(0)}% hist`
-                    : "")
-                }`
-              : null,
-            opportunity.history?.home
-              ? `${opportunity.history.home.abbreviation || opportunity.homeTeam} ${
-                  opportunity.history.home.seasonRecord ??
-                  (opportunity.history.home.historicalWinPct != null
-                    ? `${(opportunity.history.home.historicalWinPct * 100).toFixed(0)}% hist`
-                    : "")
-                }`
-              : null,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </p>
-      )}
-
-      {opportunity.pitchers && (opportunity.pitchers.home || opportunity.pitchers.away) && (
-        <p className="history-line">
-          Probables:{" "}
-          {[
-            opportunity.pitchers.away
-              ? `${opportunity.pitchers.away.fullName}${
-                  opportunity.pitchers.away.era != null
-                    ? ` ${opportunity.pitchers.away.era.toFixed(2)}`
-                    : ""
-                }`
-              : opportunity.awayTeam,
-            opportunity.pitchers.home
-              ? `${opportunity.pitchers.home.fullName}${
-                  opportunity.pitchers.home.era != null
-                    ? ` ${opportunity.pitchers.home.era.toFixed(2)}`
-                    : ""
-                }`
-              : opportunity.homeTeam,
-          ].join(" @ ")}
-        </p>
-      )}
-
-      {opportunity.restTravel?.note ? (
-        <p className="history-line">{opportunity.restTravel.note}</p>
-      ) : null}
-
-      {opportunity.savant && (
-        <p className="history-line">
-          Savant Statcast: home lean {(opportunity.savant.homeWinLean * 100).toFixed(0)}%
-          {opportunity.savant.home.hitting?.xwoba != null &&
-          opportunity.savant.away.hitting?.xwoba != null
-            ? ` · xwOBA ${opportunity.savant.away.hitting.teamAbbrev} ${opportunity.savant.away.hitting.xwoba.toFixed(3)} @ ${opportunity.savant.home.hitting.teamAbbrev} ${opportunity.savant.home.hitting.xwoba.toFixed(3)}`
-            : ""}
-          {opportunity.savant.home.hitting?.barrelPct != null &&
-          opportunity.savant.away.hitting?.barrelPct != null
-            ? ` · barrel% ${opportunity.savant.away.hitting.barrelPct.toFixed(1)}/${opportunity.savant.home.hitting.barrelPct.toFixed(1)}`
-            : ""}
-        </p>
-      )}
-
-      {opportunity.espn?.injuries?.length ? (
-        <p className="injury-line">
-          ESPN injuries:{" "}
-          {opportunity.espn.injuries
-            .slice(0, 3)
-            .map((i) => `${i.athlete} (${i.status})`)
-            .join(" · ")}
-        </p>
-      ) : null}
-
       <button type="button" className="details-toggle" onClick={() => setOpen((v) => !v)}>
-        {open ? "Hide breakdown" : "Show model breakdown"}
+        {open ? "Hide details" : "Show details"}
       </button>
 
       {open && (
         <div className="details">
+          {top && (
+            <p className="signal-meta">
+              Model {(top.modelProb * 100).toFixed(1)}% · confidence{" "}
+              {(top.confidence * 100).toFixed(0)}%
+              {opportunity.kellyPct != null && opportunity.kellyPct > 0
+                ? ` · Kelly ${(opportunity.kellyPct * 100).toFixed(2)}% BR`
+                : ""}
+            </p>
+          )}
+
+          {opportunity.weather?.outdoorRelevant && (
+            <p className="weather-line">
+              {opportunity.weather.condition} · {opportunity.weather.tempF}°F · wind{" "}
+              {opportunity.weather.windMph} mph
+              {opportunity.weather.humidity != null
+                ? ` · humidity ${opportunity.weather.humidity}%`
+                : ""}
+              {" · "}
+              {opportunity.weather.location}
+              {opportunity.weather.source === "weather-underground"
+                ? " · Data provided by Weather Underground"
+                : opportunity.weather.source
+                  ? ` · via ${opportunity.weather.source}`
+                  : ""}
+            </p>
+          )}
+
+          {(opportunity.history?.home || opportunity.history?.away) && (
+            <p className="history-line">
+              ESPN history:{" "}
+              {[
+                opportunity.history?.away
+                  ? `${opportunity.history.away.abbreviation || opportunity.awayTeam} ${
+                      opportunity.history.away.seasonRecord ??
+                      (opportunity.history.away.historicalWinPct != null
+                        ? `${(opportunity.history.away.historicalWinPct * 100).toFixed(0)}% hist`
+                        : "")
+                    }`
+                  : null,
+                opportunity.history?.home
+                  ? `${opportunity.history.home.abbreviation || opportunity.homeTeam} ${
+                      opportunity.history.home.seasonRecord ??
+                      (opportunity.history.home.historicalWinPct != null
+                        ? `${(opportunity.history.home.historicalWinPct * 100).toFixed(0)}% hist`
+                        : "")
+                    }`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          )}
+
+          {opportunity.pitchers && (opportunity.pitchers.home || opportunity.pitchers.away) && (
+            <p className="history-line">
+              Probables:{" "}
+              {[
+                opportunity.pitchers.away
+                  ? `${opportunity.pitchers.away.fullName}${
+                      opportunity.pitchers.away.era != null
+                        ? ` ${opportunity.pitchers.away.era.toFixed(2)}`
+                        : ""
+                    }`
+                  : opportunity.awayTeam,
+                opportunity.pitchers.home
+                  ? `${opportunity.pitchers.home.fullName}${
+                      opportunity.pitchers.home.era != null
+                        ? ` ${opportunity.pitchers.home.era.toFixed(2)}`
+                        : ""
+                    }`
+                  : opportunity.homeTeam,
+              ].join(" @ ")}
+            </p>
+          )}
+
+          {opportunity.restTravel?.note ? (
+            <p className="history-line">{opportunity.restTravel.note}</p>
+          ) : null}
+
+          {opportunity.savant && (
+            <p className="history-line">
+              Savant Statcast: home lean {(opportunity.savant.homeWinLean * 100).toFixed(0)}%
+              {opportunity.savant.home.hitting?.xwoba != null &&
+              opportunity.savant.away.hitting?.xwoba != null
+                ? ` · xwOBA ${opportunity.savant.away.hitting.teamAbbrev} ${opportunity.savant.away.hitting.xwoba.toFixed(3)} @ ${opportunity.savant.home.hitting.teamAbbrev} ${opportunity.savant.home.hitting.xwoba.toFixed(3)}`
+                : ""}
+              {opportunity.savant.home.hitting?.barrelPct != null &&
+              opportunity.savant.away.hitting?.barrelPct != null
+                ? ` · barrel% ${opportunity.savant.away.hitting.barrelPct.toFixed(1)}/${opportunity.savant.home.hitting.barrelPct.toFixed(1)}`
+                : ""}
+            </p>
+          )}
+
+          {opportunity.espn?.injuries?.length ? (
+            <p className="injury-line">
+              ESPN injuries:{" "}
+              {opportunity.espn.injuries
+                .slice(0, 3)
+                .map((i) => `${i.athlete} (${i.status})`)
+                .join(" · ")}
+            </p>
+          ) : null}
+
           {(opportunity.history?.home || opportunity.history?.away) && (
             <div className="history-panel">
               <p className="books-title">ESPN team &amp; player history</p>
@@ -269,7 +302,9 @@ export function EdgeCard({ opportunity }: { opportunity: EdgeOpportunity }) {
             </div>
           )}
           <ul className="signal-list">
-            {opportunity.signals.map((s) => (
+            {opportunity.signals.map((s) => {
+              const saved = isSaved(identityFor(s));
+              return (
               <li key={`${s.market}-${s.selection}-${s.line ?? ""}`}>
                 <div className="signal-row">
                   <strong>
@@ -285,11 +320,11 @@ export function EdgeCard({ opportunity }: { opportunity: EdgeOpportunity }) {
                 </p>
                 <button
                   type="button"
-                  className="save-pick-btn compact"
-                  disabled={pending}
+                  className={`save-pick-btn compact${saved ? " is-saved" : ""}`}
+                  disabled={pending || saved}
                   onClick={() => saveSignal(s)}
                 >
-                  Save this pick
+                  {saved ? "Saved pick" : "Save this pick"}
                 </button>
                 <ul className="rationale">
                   {s.rationale.map((r) => (
@@ -297,7 +332,8 @@ export function EdgeCard({ opportunity }: { opportunity: EdgeOpportunity }) {
                   ))}
                 </ul>
               </li>
-            ))}
+              );
+            })}
           </ul>
 
           <div className="books">

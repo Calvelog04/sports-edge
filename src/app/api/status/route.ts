@@ -1,15 +1,20 @@
 import { NextResponse } from "next/server";
 import { loadModelState } from "@/lib/model-state";
-import { SPORT_OPTIONS, hasOddsApiKey } from "@/lib/odds";
+import { getActiveSportOptions, hasOddsApiKey } from "@/lib/odds";
 import { getOddsQuota } from "@/lib/odds-quota";
+import { oddsScheduleSummary } from "@/lib/odds-schedule";
+import { getInSeasonSports } from "@/lib/sports-season";
 import { hasWeatherUndergroundKey } from "@/lib/weather";
 
 export async function GET() {
   const [model, oddsQuota] = await Promise.all([loadModelState(), getOddsQuota()]);
+  const schedule = oddsScheduleSummary();
   return NextResponse.json({
-    sports: SPORT_OPTIONS,
+    sports: getActiveSportOptions(),
+    inSeason: getInSeasonSports().map((s) => s.label),
     oddsApiConfigured: hasOddsApiKey(),
     oddsQuota,
+    oddsSchedule: schedule,
     weatherUndergroundConfigured: hasWeatherUndergroundKey(),
     weather: hasWeatherUndergroundKey()
       ? "Weather Underground (api.weather.com) primary · Open-Meteo fallback"
@@ -30,6 +35,6 @@ export async function GET() {
       weights: model.weights,
       dailyLog: model.dailyLog.slice(0, 7),
     },
-    note: "Live leagues: MLB, NFL, NCAAF, NBA, NCAAB, NHL. Odds responses cached ~60s; Best/Suggested share one slate.",
+    note: "Upcoming-only boards. Odds API pulls at most once per endpoint per hour from 10am–9pm local (12×/day); out-of-season leagues stay off until 1 week before start.",
   });
 }

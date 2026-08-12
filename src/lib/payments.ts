@@ -3,6 +3,8 @@ import path from "path";
 
 export type BillingMode = "test" | "live";
 export type PaymentProvider = "stripe" | "none";
+export type PaymentInterval = "month" | "year";
+export type PaymentMethod = "card" | "venmo" | "manual";
 
 export interface PaymentPlan {
   id: string;
@@ -23,6 +25,10 @@ export interface PaymentSettings {
   webhookSecret: string;
   successUrl: string;
   cancelUrl: string;
+  /** Venmo Business profile username (no @). Card fees land in Stripe; move payouts to this Venmo. */
+  venmoBusinessUsername: string;
+  /** Shown on the account paywall (optional). */
+  venmoDisplayName: string;
   plans: PaymentPlan[];
   updatedAt: string;
 }
@@ -38,6 +44,9 @@ export interface PaymentSettingsPublic {
   webhookSecretMasked: string;
   successUrl: string;
   cancelUrl: string;
+  venmoBusinessUsername: string;
+  venmoDisplayName: string;
+  venmoConfigured: boolean;
   plans: PaymentPlan[];
   updatedAt: string;
   ready: boolean;
@@ -52,7 +61,9 @@ export interface PaymentEvent {
   amountCents: number;
   currency: string;
   status: "pending" | "paid" | "failed" | "refunded";
+  method: PaymentMethod;
   note: string;
+  externalId?: string | null;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -67,8 +78,10 @@ function defaultSettings(): PaymentSettings {
     publishableKey: "",
     secretKey: "",
     webhookSecret: "",
-    successUrl: "/management?billing=success",
-    cancelUrl: "/management?billing=cancel",
+    successUrl: "/account?checkout=success",
+    cancelUrl: "/account?checkout=cancel",
+    venmoBusinessUsername: "",
+    venmoDisplayName: "",
     plans: [
       {
         id: "free",
@@ -86,7 +99,6 @@ function defaultSettings(): PaymentSettings {
         features: [
           "Everything in Free",
           "Props + Best + Suggested",
-          "Performance dashboard",
           "Priority rescans",
         ],
         active: true,
@@ -101,6 +113,10 @@ function maskSecret(value: string): string {
   if (!v) return "";
   if (v.length <= 8) return "••••••••";
   return `${v.slice(0, 4)}…${v.slice(-4)}`;
+}
+
+function normalizeVenmoUsername(raw: string): string {
+  return raw.trim().replace(/^@+/, "");
 }
 
 async function ensureFiles(): Promise<void> {
@@ -126,6 +142,10 @@ export async function readPaymentSettings(): Promise<PaymentSettings> {
     return {
       ...base,
       ...parsed,
+      venmoBusinessUsername: normalizeVenmoUsername(
+        parsed.venmoBusinessUsername ?? base.venmoBusinessUsername,
+      ),
+      venmoDisplayName: (parsed.venmoDisplayName ?? base.venmoDisplayName).trim(),
       plans:
         Array.isArray(parsed.plans) && parsed.plans.length > 0 ? parsed.plans : base.plans,
     };
@@ -134,21 +154,62 @@ export async function readPaymentSettings(): Promise<PaymentSettings> {
   }
 }
 
+/** Prefer env keys; fall back to Management-saved keys in data/payments.json. */
+export async function getResolvedStripeKeys(): Promise<{
+  secretKey: string;
+  publishableKey: string;
+  webhookSecret: string;
+}> {
+  const settings = await readPaymentSettings();
+  return {
+    secretKey: (process.env.STRIPE_SECRET_KEY || settings.secretKey || "").trim(),
+    publishableKey: (
+      process.env.STRIPE_PUBLISHABLE_KEY ||
+      settings.publishableKey ||
+      ""
+    ).trim(),
+    webhookSecret: (
+      process.env.STRIPE_WEBHOOK_SECRET ||
+      settings.webhookSecret ||
+      ""
+    ).trim(),
+  };
+}
+
 export function toPublicSettings(settings: PaymentSettings): PaymentSettingsPublic {
-  const secretKeySet = Boolean(settings.secretKey.trim());
-  const webhookSecretSet = Boolean(settings.webhookSecret.trim());
-  const publishableSet = Boolean(settings.publishableKey.trim());
+  // Reflect env-backed secrets in "set" flags without exposing values.
+  const envSecret = Boolean(process.env.STRIPE_SECRET_KEY?.trim());
+  const envWebhook = Boolean(process.env.STRIPE_WEBHOOK_SECRET?.trim());
+  const envPub = Boolean(process.env.STRIPE_PUBLISHABLE_KEY?.trim());
+
+  const secretKeySet = envSecret || Boolean(settings.secretKey.trim());
+  const webhookSecretSet = envWebhook || Boolean(settings.webhookSecret.trim());
+  const publishableKey = (
+    process.env.STRIPE_PUBLISHABLE_KEY ||
+    settings.publishableKey ||
+    ""
+  ).trim();
+  const publishableSet = envPub || Boolean(publishableKey);
+  const venmoBusinessUsername = normalizeVenmoUsername(settings.venmoBusinessUsername);
+
   return {
     provider: settings.provider,
     mode: settings.mode,
     currency: settings.currency,
-    publishableKey: settings.publishableKey,
+    publishableKey,
     secretKeySet,
-    secretKeyMasked: maskSecret(settings.secretKey),
+    secretKeyMasked: maskSecret(
+      process.env.STRIPE_SECRET_KEY?.trim() || settings.secretKey,
+    ),
     webhookSecretSet,
-    webhookSecretMasked: maskSecret(settings.webhookSecret),
+    webhookSecretMasked: maskSecret(
+      process.env.STRIPE_WEBHOOK_SECRET?.trim() || settings.webhookSecret,
+    ),
     successUrl: settings.successUrl,
     cancelUrl: settings.cancelUrl,
+    venmoBusinessUsername,
+    venmoDisplayName: settings.venmoDisplayName,
+    venmoConfigured: Boolean(venmoBusinessUsername),
     plans: settings.plans,
     updatedAt: settings.updatedAt,
     ready:
@@ -169,6 +230,8 @@ export async function savePaymentSettings(
     webhookSecret: string;
     successUrl: string;
     cancelUrl: string;
+    venmoBusinessUsername: string;
+    venmoDisplayName: string;
     plans: PaymentPlan[];
   }>,
 ): Promise<PaymentSettingsPublic> {
@@ -180,7 +243,6 @@ export async function savePaymentSettings(
     currency: (patch.currency ?? current.currency).toLowerCase(),
     publishableKey:
       patch.publishableKey !== undefined ? patch.publishableKey.trim() : current.publishableKey,
-    // Empty string from client means "keep existing"
     secretKey:
       patch.secretKey !== undefined && patch.secretKey.trim() !== ""
         ? patch.secretKey.trim()
@@ -191,6 +253,14 @@ export async function savePaymentSettings(
         : current.webhookSecret,
     successUrl: patch.successUrl?.trim() || current.successUrl,
     cancelUrl: patch.cancelUrl?.trim() || current.cancelUrl,
+    venmoBusinessUsername:
+      patch.venmoBusinessUsername !== undefined
+        ? normalizeVenmoUsername(patch.venmoBusinessUsername)
+        : current.venmoBusinessUsername,
+    venmoDisplayName:
+      patch.venmoDisplayName !== undefined
+        ? patch.venmoDisplayName.trim()
+        : current.venmoDisplayName,
     plans: patch.plans ?? current.plans,
     updatedAt: new Date().toISOString(),
   };
@@ -204,7 +274,12 @@ export async function readPaymentEvents(): Promise<PaymentEvent[]> {
   try {
     const raw = await fs.readFile(EVENTS_FILE, "utf8");
     const parsed = JSON.parse(raw) as PaymentEvent[];
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((ev) => ({
+      ...ev,
+      method: ev.method ?? "manual",
+      externalId: ev.externalId ?? null,
+    }));
   } catch {
     return [];
   }
@@ -216,10 +291,36 @@ export async function addPaymentEvent(
   const events = await readPaymentEvents();
   const row: PaymentEvent = {
     ...input,
+    method: input.method ?? "manual",
+    externalId: input.externalId ?? null,
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
   };
   events.unshift(row);
   await fs.writeFile(EVENTS_FILE, JSON.stringify(events.slice(0, 200), null, 2), "utf8");
   return row;
+}
+
+export async function updatePaymentEvent(
+  id: string,
+  patch: Partial<Pick<PaymentEvent, "status" | "note" | "externalId" | "method">>,
+): Promise<PaymentEvent> {
+  const events = await readPaymentEvents();
+  const idx = events.findIndex((e) => e.id === id);
+  if (idx < 0) throw new Error("Payment event not found");
+  const current = events[idx]!;
+  const next: PaymentEvent = {
+    ...current,
+    ...patch,
+  };
+  events[idx] = next;
+  await fs.writeFile(EVENTS_FILE, JSON.stringify(events, null, 2), "utf8");
+  return next;
+}
+
+export async function findPaymentEventByExternalId(
+  externalId: string,
+): Promise<PaymentEvent | null> {
+  const events = await readPaymentEvents();
+  return events.find((e) => e.externalId === externalId) ?? null;
 }

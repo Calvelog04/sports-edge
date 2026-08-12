@@ -3,12 +3,27 @@
 import { useState, useTransition } from "react";
 import type { SuggestedPick } from "@/lib/types";
 import { formatAmerican, formatEdge, formatKickoff } from "@/lib/format";
+import { useSavedPicks } from "@/hooks/useSavedPicks";
 
 export function SuggestedCard({ pick }: { pick: SuggestedPick }) {
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  const { isSaved, markSaved } = useSavedPicks();
+  const identity = {
+    eventId: pick.eventId,
+    market: pick.market,
+    selection: pick.selection,
+    homeTeam: pick.homeTeam,
+    awayTeam: pick.awayTeam,
+    commenceTime: pick.commenceTime,
+  };
+  const alreadySaved = isSaved(identity);
 
   function save() {
+    if (alreadySaved) {
+      setSavedMsg("Already saved in Picks");
+      return;
+    }
     startTransition(async () => {
       setSavedMsg(null);
       try {
@@ -28,12 +43,14 @@ export function SuggestedCard({ pick }: { pick: SuggestedPick }) {
             book: pick.bestBook,
             modelProb: pick.modelProb,
             edgePct: pick.edgePct,
+            boardSource: "suggested",
           }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body.error ?? "Could not save pick");
         }
+        markSaved(identity);
         setSavedMsg("Saved to Picks");
       } catch (e) {
         setSavedMsg(e instanceof Error ? e.message : "Save failed");
@@ -64,14 +81,21 @@ export function SuggestedCard({ pick }: { pick: SuggestedPick }) {
           {formatAmerican(pick.bestPrice)} at {pick.bestBook} · edge{" "}
           {formatEdge(pick.edgePct)} · book implies {(pick.bookImpliedProb * 100).toFixed(1)}%
         </p>
-        <button type="button" className="save-pick-btn" disabled={pending} onClick={save}>
-          {pending ? "Saving…" : "Save pick"}
+        <button
+          type="button"
+          className={`save-pick-btn${alreadySaved ? " is-saved" : ""}`}
+          disabled={pending || alreadySaved}
+          onClick={save}
+        >
+          {pending ? "Saving…" : alreadySaved ? "Saved pick" : "Save pick"}
         </button>
-        {savedMsg && <p className="save-pick-msg">{savedMsg}</p>}
+        {(savedMsg || alreadySaved) && (
+          <p className="save-pick-msg">{savedMsg ?? "Already saved in Picks"}</p>
+        )}
       </div>
 
       <ul className="rationale">
-        {pick.rationale.map((r) => (
+        {pick.rationale.slice(0, 2).map((r) => (
           <li key={r}>{r}</li>
         ))}
       </ul>

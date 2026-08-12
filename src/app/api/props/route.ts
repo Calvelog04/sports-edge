@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildMlbProps } from "@/lib/props";
-import { parseTiming } from "@/lib/timing";
+import { parsePropsTiming } from "@/lib/timing";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const timing = parseTiming(req.nextUrl.searchParams.get("timing"));
+  // Ensure background noon/4pm scheduler is alive even if instrumentation skipped.
+  const { startPropsAutoPull } = await import("@/lib/props-auto-pull");
+  startPropsAutoPull();
+
+  const timing = parsePropsTiming(req.nextUrl.searchParams.get("timing"));
   try {
     const data = await buildMlbProps(timing);
     return NextResponse.json(data);

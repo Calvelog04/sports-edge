@@ -9,9 +9,12 @@ function isBettingPath(pathname: string): boolean {
   if (pathname === "/account" || pathname.startsWith("/account/")) return false;
   if (pathname === "/login" || pathname.startsWith("/login")) return false;
   if (pathname.startsWith("/management")) return false;
+  if (pathname === "/performance" || pathname.startsWith("/performance/")) return false;
   if (pathname.startsWith("/api/auth")) return false;
   if (pathname.startsWith("/api/management")) return false;
+  if (pathname.startsWith("/api/performance")) return false;
   if (pathname.startsWith("/api/account")) return false;
+  if (pathname.startsWith("/api/billing")) return false;
   // Everything else in the app is betting/research related for paywall purposes
   if (pathname.startsWith("/api/")) return true;
   if (pathname === "/info") return false; // allow info docs
@@ -23,7 +26,10 @@ export async function proxy(request: NextRequest) {
   const isLoginPage = pathname === "/login";
   const isMgmtPage = pathname === "/management" || pathname.startsWith("/management/");
   const isMgmtApi = pathname.startsWith("/api/management");
+  const isPerfPage = pathname === "/performance" || pathname.startsWith("/performance/");
+  const isPerfApi = pathname.startsWith("/api/performance");
   const isAuthApi = pathname.startsWith("/api/auth/");
+  const isBillingApi = pathname.startsWith("/api/billing");
   const isAccountPage = ACCOUNT_PATHS.has(pathname) || pathname.startsWith("/account/");
   const isAccountApi = ACCOUNT_APIS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 
@@ -40,34 +46,40 @@ export async function proxy(request: NextRequest) {
   const mgmtOk = mgmtSession.ok;
   const userPaid = userIsPaid(userSession);
 
-  if (isAuthApi) {
+  if (isAuthApi || isBillingApi) {
     return NextResponse.next();
   }
 
   if (isLoginPage) {
     const next = request.nextUrl.searchParams.get("next") ?? "";
-    if (next.startsWith("/management") && mgmtOk) {
-      return NextResponse.redirect(new URL("/management", request.url));
+    if ((next.startsWith("/management") || next.startsWith("/performance")) && mgmtOk) {
+      return NextResponse.redirect(new URL(next.startsWith("/performance") ? "/performance" : "/management", request.url));
     }
     if (userOk && !userPaid) {
       return NextResponse.redirect(new URL("/account", request.url));
     }
-    if (userOk && userPaid && !next.startsWith("/management")) {
+    if (userOk && userPaid && !next.startsWith("/management") && !next.startsWith("/performance")) {
       return NextResponse.redirect(new URL("/", request.url));
     }
-    if (!next.startsWith("/management") && !next.startsWith("/account") && appOk && !userOk) {
+    if (
+      !next.startsWith("/management") &&
+      !next.startsWith("/performance") &&
+      !next.startsWith("/account") &&
+      appOk &&
+      !userOk
+    ) {
       return NextResponse.redirect(new URL("/", request.url));
     }
     return NextResponse.next();
   }
 
-  if (isMgmtPage || isMgmtApi) {
+  if (isMgmtPage || isMgmtApi || isPerfPage || isPerfApi) {
     if (!mgmtOk) {
-      if (isMgmtApi) {
+      if (isMgmtApi || isPerfApi) {
         return NextResponse.json({ error: "Management login required" }, { status: 401 });
       }
       const login = new URL("/login", request.url);
-      login.searchParams.set("next", "/management");
+      login.searchParams.set("next", isPerfPage ? "/performance" : "/management");
       return NextResponse.redirect(login);
     }
     return NextResponse.next();

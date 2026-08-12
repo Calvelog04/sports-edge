@@ -1,4 +1,5 @@
 import type { ProbablePitcher, ProbablePitcherMatchup } from "./types";
+import { GAME_DATE_TZ, gameDateKey } from "./pick-identity";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
@@ -34,14 +35,18 @@ function namesMatch(a: string, b: string): boolean {
 function dateKeysAround(iso: string): string[] {
   const start = new Date(iso);
   if (Number.isNaN(start.getTime())) return [];
+  const center = gameDateKey(iso, GAME_DATE_TZ);
+  if (!center) return [];
+  const [y, m, d] = center.split("-").map(Number);
+  const base = new Date(Date.UTC(y!, m! - 1, d!));
   const keys: string[] = [];
-  for (const delta of [-1, 0, 1]) {
-    const d = new Date(start.getTime() + delta * 24 * 60 * 60 * 1000);
+  for (const delta of [0, -1, 1]) {
+    const day = new Date(base.getTime() + delta * 24 * 60 * 60 * 1000);
     keys.push(
-      `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`,
+      `${day.getUTCFullYear()}-${String(day.getUTCMonth() + 1).padStart(2, "0")}-${String(day.getUTCDate()).padStart(2, "0")}`,
     );
   }
-  return [...new Set(keys)];
+  return keys;
 }
 
 function parsePitcher(raw: Record<string, unknown> | null | undefined): ProbablePitcher | null {

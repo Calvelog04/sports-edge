@@ -1,8 +1,9 @@
+import { compareByCommenceAsc } from "./board-sort";
 import { americanToDecimal, americanToImplied, fetchEventOdds, fetchSportEvents, removeVig } from "./odds";
 import { getOddsQuota } from "./odds-quota";
 import { getSavantMatchup } from "./savant";
 import { findSavantPlayer, loadSavantPlayers, type SavantPlayerRate } from "./savant-players";
-import { isLiveGame, type GameTiming } from "./timing";
+import { type GameTiming } from "./timing";
 import type {
   Bookmaker,
   PropMarketKey,
@@ -358,10 +359,108 @@ function scoreEventProps(
 }
 
 export async function buildMlbProps(timing: GameTiming = "upcoming"): Promise<PropsResponse> {
+  const { LIVE_PROPS_ENABLED } = await import("./timing");
+  const effectiveTiming: GameTiming =
+    timing === "live" && LIVE_PROPS_ENABLED ? "live" : "upcoming";
+
+  const { isSportInSeason } = await import("./sports-season");
+  if (!isSportInSeason("baseball_mlb")) {
+    return {
+      generatedAt: new Date().toISOString(),
+      mode: "unavailable",
+      timing: effectiveTiming,
+      opportunities: [],
+      warnings: ["MLB props are off until 1 week before Opening Day."],
+      eventsScanned: 0,
+    };
+  }
+
+  // Live props: ESPN only, no noon/4pm credit schedule — refresh freely.
+  if (effectiveTiming === "live") {
+    const board = await buildMlbPropsFresh("live", "espn");
+    return {
+      ...board,
+      timing: "live",
+      generatedAt: new Date().toISOString(),
+      warnings: [
+        "Live props via ESPN (hits & HRs) · refreshes on demand.",
+        ...(board.warnings ?? []),
+      ],
+      oddsQuota: await getOddsQuota(),
+      boardCached: false,
+    };
+  }
+
+  const { formatNextPropsRefresh, withScheduledPropsPull, propsScheduleSummary } =
+    await import("./odds-schedule");
+
+  const scheduled = await withScheduledPropsPull("mlb-board", async (source) =>
+    buildMlbPropsFresh("upcoming", source),
+  );
+
+  if (!scheduled) {
+    return {
+      generatedAt: new Date().toISOString(),
+      mode: "unavailable",
+      timing: "upcoming",
+      opportunities: [],
+      warnings: [
+        `Props auto-pull at noon (credits) and 4pm (ESPN). ${formatNextPropsRefresh()} No cached props board yet.`,
+      ],
+      eventsScanned: 0,
+      oddsQuota: await getOddsQuota(),
+    };
+  }
+
+  const board = scheduled.value;
+  const warnings = [...(board.warnings ?? [])];
+  warnings.unshift(propsScheduleSummary().message);
+  if (scheduled.fromCache) {
+    warnings.unshift(scheduled.reason);
+  }
+
+  return {
+    ...board,
+    timing: "upcoming",
+    generatedAt: scheduled.fromCache ? board.generatedAt : new Date().toISOString(),
+    warnings,
+    oddsQuota: await getOddsQuota(),
+    boardCached: scheduled.fromCache,
+  };
+}
+
+async function buildMlbPropsFresh(
+  timing: GameTiming,
+  source: "credits" | "espn",
+): Promise<PropsResponse> {
   const warnings: string[] = [];
-  const { events, warning, fromCache } = await fetchSportEvents("baseball_mlb");
+  if (timing === "live") {
+    warnings.push("Scanning in-play MLB games for ESPN prop markets.");
+  } else {
+    warnings.push(
+      source === "espn"
+        ? "4pm props refresh via ESPN (no paid credits)."
+        : "Noon props pull via paid odds credits (Odds API / Parlay), ESPN fallback.",
+    );
+  }
+
+  const { events, warning, fromCache, source: eventSource } = await fetchSportEvents(
+    "baseball_mlb",
+    { source: timing === "live" ? "espn" : source },
+  );
   if (warning) warnings.push(warning);
-  if (fromCache) warnings.push("Events list served from Odds API cache (60s TTL).");
+  if (fromCache) {
+    warnings.push(
+      eventSource === "espn"
+        ? "ESPN event list cache hit."
+        : "Events list served from Odds API cache.",
+    );
+  }
+  if (eventSource === "espn" || source === "espn") {
+    warnings.push(
+      "Prop odds via ESPN (hits + HR milestones). 1st-inning totals need The Odds API when available.",
+    );
+  }
 
   if (events.length === 0) {
     return {
@@ -376,22 +475,24 @@ export async function buildMlbProps(timing: GameTiming = "upcoming"): Promise<Pr
     };
   }
 
+  const { phaseFromCommence } = await import("./timing");
   const now = Date.now();
   const sorted = [...events].sort(
     (a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time),
   );
 
   const timed = sorted.filter((e) => {
-    const live = isLiveGame(e.commence_time, now);
+    const phase = phaseFromCommence(e.commence_time, now);
+    if (phase === "final") return false;
+    const live = phase === "in_progress";
     return timing === "live" ? live : !live;
   });
-
   const targets = timed.slice(0, MAX_EVENTS);
   if (targets.length === 0) {
     warnings.push(
       timing === "live"
-        ? "No in-progress MLB games for props — try Upcoming."
-        : "No upcoming MLB games for props — try Live.",
+        ? "No in-play MLB games with props right now."
+        : "No upcoming MLB games for props right now.",
     );
   }
 
@@ -408,10 +509,16 @@ export async function buildMlbProps(timing: GameTiming = "upcoming"): Promise<Pr
 
   const opportunities: PropOpportunity[] = [];
   let scanned = 0;
+  const oddsSource = timing === "live" ? "espn" : source;
 
   await Promise.all(
     targets.map(async (meta) => {
-      const event = await fetchEventOdds("baseball_mlb", meta.id, PROP_MARKETS);
+      const event = await fetchEventOdds("baseball_mlb", meta.id, PROP_MARKETS, {
+        homeTeam: meta.home_team,
+        awayTeam: meta.away_team,
+        commenceTime: meta.commence_time,
+        source: oddsSource,
+      });
       if (!event || event.bookmakers.length === 0) return;
       scanned += 1;
       const savant = await getSavantMatchup(event.home_team, event.away_team).catch(() => null);
@@ -421,11 +528,16 @@ export async function buildMlbProps(timing: GameTiming = "upcoming"): Promise<Pr
 
   if (scanned === 0 && targets.length > 0) {
     warnings.push(
-      "Books returned no MLB prop markets for these games yet (props often post closer to first pitch).",
+      timing === "live"
+        ? "No ESPN prop markets posted for these in-play games yet."
+        : "No MLB prop markets yet for these games (ESPN/Odds API often post closer to first pitch).",
     );
   }
 
-  opportunities.sort((a, b) => b.edgePct - a.edgePct);
+  // Games by tipoff ascending; within a tipoff, strongest edge first.
+  opportunities.sort(
+    (a, b) => compareByCommenceAsc(a, b) || b.edgePct - a.edgePct,
+  );
 
   return {
     generatedAt: new Date().toISOString(),

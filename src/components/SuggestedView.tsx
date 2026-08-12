@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import type { SportKey, SuggestionsResponse } from "@/lib/types";
-import { SPORT_OPTIONS } from "@/lib/odds-client";
-import type { GameTiming } from "@/lib/timing";
-import { OddsQuotaLabel } from "./OddsQuotaLabel";
+import { matchesBoardSearch } from "@/lib/board-search";
+import { getActiveSportOptions } from "@/lib/odds-client";
+import { BoardIntro } from "./BoardIntro";
+import { BoardSearch } from "./BoardSearch";
+import { BoardStatus } from "./BoardStatus";
 import { SiteNav } from "./SiteNav";
 import { SportPicker } from "./SportPicker";
 import { SuggestedCard } from "./SuggestedCard";
@@ -12,24 +14,23 @@ import { TimingSwitch } from "./TimingSwitch";
 
 type SportFilter = SportKey | "all";
 
-const SPORT_FILTERS: Array<{ key: SportFilter; label: string }> = [
-  { key: "all", label: "All" },
-  ...SPORT_OPTIONS,
-];
-
 export function SuggestedView() {
+  const sportFilters = useMemo<Array<{ key: SportFilter; label: string }>>(
+    () => [{ key: "all", label: "All" }, ...getActiveSportOptions()],
+    [],
+  );
   const [sport, setSport] = useState<SportFilter>("all");
-  const [timing, setTiming] = useState<GameTiming>("upcoming");
+  const [query, setQuery] = useState("");
   const [data, setData] = useState<SuggestionsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
-  const load = useCallback((nextSport: SportFilter, nextTiming: GameTiming) => {
+  const load = useCallback((nextSport: SportFilter) => {
     startTransition(async () => {
       setError(null);
       try {
         const res = await fetch(
-          `/api/suggestions?sport=${nextSport}&timing=${nextTiming}`,
+          `/api/suggestions?sport=${nextSport}&timing=upcoming`,
           { cache: "no-store" },
         );
         if (!res.ok) {
@@ -44,64 +45,76 @@ export function SuggestedView() {
   }, []);
 
   useEffect(() => {
-    load(sport, timing);
-  }, [sport, timing, load]);
+    load(sport);
+  }, [sport, load]);
+
+  const visible = useMemo(() => {
+    const list = data?.suggestions ?? [];
+    return list.filter((p) =>
+      matchesBoardSearch(query, p.homeTeam, p.awayTeam, p.selection),
+    );
+  }, [data, query]);
 
   return (
     <div className="dashboard">
       <header className="topbar">
         <div className="brand-block">
           <p className="brand">MintPicks</p>
-          <p className="tagline">Suggested picks — highest model win probability</p>
+          <p className="tagline">Suggested · highest model win%</p>
           <SiteNav />
         </div>
         <div className="header-controls">
-          <TimingSwitch value={timing} onChange={setTiming} />
-          <SportPicker sports={SPORT_FILTERS} value={sport} onChange={setSport} />
+          <TimingSwitch />
+          <SportPicker sports={sportFilters} value={sport} onChange={setSport} />
           <button
             type="button"
             className="refresh-btn"
-            onClick={() => load(sport, timing)}
+            onClick={() => load(sport)}
             disabled={pending}
           >
-            {pending ? "Scanning…" : "Rescan"}
+            {pending ? "Updating…" : "Refresh view"}
           </button>
         </div>
       </header>
 
-      <div className={`status-banner ${data?.mode === "live" ? "live" : ""}`}>
-        <div>
-          <span className="mode-pill">SUGGESTED</span>
-          <span className="meta">
-            {data
-              ? `${data.suggestions.length} moneylines · ranked by model win%`
-              : "Loading…"}
-            {data ? (
-              <>
-                {" · "}
-                <OddsQuotaLabel quota={data.oddsQuota} />
-              </>
-            ) : null}
-          </span>
-        </div>
-      </div>
+      <BoardIntro board="suggested" />
+
+      <BoardSearch
+        value={query}
+        onChange={setQuery}
+        placeholder="Search teams…"
+        matchCount={visible.length}
+        totalCount={data?.suggestions.length ?? 0}
+      />
+
+      <BoardStatus
+        pill="SUGGESTED"
+        countLabel={
+          data
+            ? `${visible.length} moneylines · ranked by win%`
+            : "Loading…"
+        }
+        generatedAt={data?.generatedAt}
+      />
 
       {error && <p className="error-banner">{error}</p>}
 
       <section className="results" aria-live="polite">
-        {pending && !data && <p className="muted">Finding the model’s strongest win leans…</p>}
+        {pending && !data && <p className="muted">Loading suggestions…</p>}
         {data && data.suggestions.length === 0 && (
           <div className="empty-state">
-            <p className="empty-title">No suggested winners yet</p>
-            <p className="muted">
-              Suggestions need a moneyline lean of at least 52% model win probability. Try another
-              league or Upcoming vs Live.
-            </p>
+            <p className="empty-title">No suggested moneylines</p>
+            <p className="muted">Try another league, or check Edges for priced value.</p>
           </div>
         )}
-
+        {data && data.suggestions.length > 0 && visible.length === 0 && (
+          <div className="empty-state">
+            <p className="empty-title">No matching picks</p>
+            <p className="muted">Clear search or try another team name.</p>
+          </div>
+        )}
         <div className="edge-grid">
-          {data?.suggestions.map((pick) => (
+          {visible.map((pick) => (
             <SuggestedCard key={pick.id} pick={pick} />
           ))}
         </div>

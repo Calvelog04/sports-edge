@@ -4,7 +4,11 @@ function formatQuota(q: OddsQuotaInfo | null | undefined): string | null {
   if (!q || q.remaining == null) return null;
   const used = q.used != null ? ` · used ${q.used}` : "";
   const last = q.last != null ? ` · last −${q.last}` : "";
-  return `Odds API ${q.remaining} left${used}${last}`;
+  const slot =
+    q.keyCount != null && q.keyCount > 1 && q.activeKeySlot != null
+      ? ` · key ${q.activeKeySlot}/${q.keyCount}`
+      : "";
+  return `Odds API ${q.remaining} left${used}${last}${slot}`;
 }
 
 export function OddsQuotaLabel({

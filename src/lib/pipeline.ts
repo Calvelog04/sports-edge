@@ -4,7 +4,13 @@ import { fetchMatchHistory } from "./espn-history";
 import { fractionalKelly } from "./kelly";
 import { learnIfNeeded } from "./learn";
 import { flattenBookOdds, scoreEvent } from "./model";
-import { ODDS_CACHE_TTL_MS, fetchOdds } from "./odds";
+import {
+  ESPN_ODDS_CACHE_TTL_MS,
+  ODDS_CACHE_TTL_MS,
+  PARLAY_ODDS_CACHE_TTL_MS,
+  SGO_ODDS_CACHE_TTL_MS,
+  fetchOdds,
+} from "./odds";
 import { getOddsQuota, type OddsQuotaSnapshot } from "./odds-quota";
 import { upsertPaperSignals } from "./paper-book";
 import { getPitcherMatchup } from "./pitchers";
@@ -58,11 +64,32 @@ async function buildWideSlate(
   timing: GameTiming,
 ): Promise<EdgesResponse> {
   const warnings: string[] = [];
-  const { events, mode, warning, fromCache } = await fetchOdds(sport);
+  const { events, mode, warning, fromCache, source } = await fetchOdds(sport, undefined, {
+    timing,
+  });
   if (warning) warnings.push(warning);
   if (fromCache) {
-    warnings.push(`Odds API cache hit (${ODDS_CACHE_TTL_MS / 1000}s TTL) — no quota spent on this pull.`);
+    const ttlSec =
+      source === "espn"
+        ? ESPN_ODDS_CACHE_TTL_MS / 1000
+        : source === "sportsgameodds"
+          ? SGO_ODDS_CACHE_TTL_MS / 1000
+          : source === "parlay"
+            ? PARLAY_ODDS_CACHE_TTL_MS / 1000
+            : ODDS_CACHE_TTL_MS / 1000;
+    warnings.push(
+      source === "espn"
+        ? `ESPN lines cache hit (${ttlSec}s TTL).`
+        : source === "sportsgameodds"
+          ? `SportsGameOdds cache hit (${ttlSec}s TTL).`
+          : source === "parlay"
+            ? `ParlayAPI cache hit (${ttlSec}s TTL).`
+            : `Odds API cache hit (${ttlSec}s TTL) — no quota spent on this pull.`,
+    );
   }
+
+  const { oddsScheduleSummary } = await import("./odds-schedule");
+  warnings.push(oddsScheduleSummary().message);
 
   const eloSync = await syncEloFromScores().catch(() => null);
   if (eloSync && eloSync.updated > 0) {
@@ -180,6 +207,7 @@ async function buildWideSlate(
       commenceTime: event.commence_time,
       homeTeam: event.home_team,
       awayTeam: event.away_team,
+      gamePhase: event.gamePhase,
       weather,
       espn,
       history,
@@ -234,6 +262,12 @@ async function buildWideSlate(
     );
   }
 
+  if (timing === "live") {
+    warnings.push(
+      "Live board: ESPN in-play game results only (ML / spread / total). Paid APIs stay off.",
+    );
+  }
+
   const quota = await getOddsQuota();
 
   return {
@@ -246,6 +280,8 @@ async function buildWideSlate(
     oddsQuota: quota,
     slateCached: false,
     edgeMinPct: modelState.edgeMinPct,
+    linesSource: source,
+    linesCached: fromCache,
   };
 }
 
@@ -254,16 +290,18 @@ async function getSharedSlate(
   timing: GameTiming,
 ): Promise<EdgesResponse> {
   const key = `${sport}|${timing}`;
+  const ttl = timing === "live" ? 90_000 : ODDS_CACHE_TTL_MS;
   const hit = slateCache.get(key);
   if (hit?.inflight) return hit.inflight;
-  if (hit && Date.now() - hit.at <= ODDS_CACHE_TTL_MS) {
+  if (hit && Date.now() - hit.at <= ttl) {
     return {
       ...hit.value,
       slateCached: true,
+      linesCached: hit.value.linesCached ?? true,
       oddsQuota: await getOddsQuota(),
       warnings: [
         ...hit.value.warnings.filter((w) => !w.startsWith("Shared slate cache")),
-        `Shared slate cache hit (${ODDS_CACHE_TTL_MS / 1000}s TTL) — Best/Suggested/Edges reuse one scan.`,
+        `Shared slate cache hit (${Math.round(ttl / 1000)}s TTL) — Best/Suggested/Edges reuse one scan.`,
       ],
     };
   }

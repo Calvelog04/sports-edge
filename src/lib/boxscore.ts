@@ -1,4 +1,5 @@
 import type { PickStatus } from "./picks";
+import { GAME_DATE_TZ, gameDateKey } from "./pick-identity";
 
 export interface BoxBatterStats {
   name: string;
@@ -12,6 +13,7 @@ export interface MlbBoxScore {
   gamePk: number;
   status: string;
   completed: boolean;
+  officialDate?: string;
   homeTeam: string;
   awayTeam: string;
   homeScore: number;
@@ -58,18 +60,10 @@ export function namesMatch(a: string, b: string): boolean {
 }
 
 function dateKeysAround(iso: string): string[] {
-  const start = new Date(iso);
-  if (Number.isNaN(start.getTime())) return [];
-  // MLB games often listed on local calendar day; check ±1 day UTC
-  const keys: string[] = [];
-  for (const delta of [-1, 0, 1]) {
-    const d = new Date(start.getTime() + delta * 24 * 60 * 60 * 1000);
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    keys.push(`${y}-${m}-${day}`);
-  }
-  return [...new Set(keys)];
+  // MLB Stats API schedule is keyed by the game's calendar date.
+  // Use only the bet's listed slate day (CT) — never yesterday-first.
+  const center = gameDateKey(iso, GAME_DATE_TZ);
+  return center ? [center] : [];
 }
 
 async function fetchJson(url: string): Promise<unknown | null> {
@@ -90,6 +84,7 @@ async function fetchJson(url: string): Promise<unknown | null> {
 
 interface ScheduleGame {
   gamePk: number;
+  officialDate?: string;
   status?: { detailedState?: string; abstractGameState?: string };
   teams?: {
     home?: { team?: { name?: string }; score?: number };
@@ -101,17 +96,16 @@ function pickScheduleGame(
   games: ScheduleGame[],
   homeTeam: string,
   awayTeam: string,
+  requiredDate?: string,
 ): ScheduleGame | null {
-  const exact = games.find(
-    (g) =>
-      namesMatch(String(g.teams?.home?.team?.name ?? ""), homeTeam) &&
-      namesMatch(String(g.teams?.away?.team?.name ?? ""), awayTeam),
-  );
-  if (exact) return exact;
+  const pool = requiredDate
+    ? games.filter((g) => !g.officialDate || g.officialDate === requiredDate)
+    : games;
+  // Require both clubs — never match on a single team (series / wrong game risk).
   return (
-    games.find(
+    pool.find(
       (g) =>
-        namesMatch(String(g.teams?.home?.team?.name ?? ""), homeTeam) ||
+        namesMatch(String(g.teams?.home?.team?.name ?? ""), homeTeam) &&
         namesMatch(String(g.teams?.away?.team?.name ?? ""), awayTeam),
     ) ?? null
   );
@@ -156,6 +150,9 @@ export async function fetchMlbBoxScore(opts: {
   awayTeam: string;
   commenceTime: string;
 }): Promise<MlbBoxScore | null> {
+  const requiredDate = gameDateKey(opts.commenceTime, GAME_DATE_TZ);
+  if (!requiredDate) return null;
+
   const dates = dateKeysAround(opts.commenceTime);
   let game: ScheduleGame | null = null;
 
@@ -164,11 +161,13 @@ export async function fetchMlbBoxScore(opts: {
       `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${date}`,
     )) as { dates?: Array<{ games?: ScheduleGame[] }> } | null;
     const games = sched?.dates?.[0]?.games ?? [];
-    game = pickScheduleGame(games, opts.homeTeam, opts.awayTeam);
+    game = pickScheduleGame(games, opts.homeTeam, opts.awayTeam, requiredDate);
     if (game) break;
   }
 
   if (!game?.gamePk) return null;
+  // Hard reject if Stats API officialDate disagrees with the bet's listed day.
+  if (game.officialDate && game.officialDate !== requiredDate) return null;
 
   const feed = (await fetchJson(
     `https://statsapi.mlb.com/api/v1.1/game/${game.gamePk}/feed/live`,
@@ -241,6 +240,7 @@ export async function fetchMlbBoxScore(opts: {
     gamePk: game.gamePk,
     status,
     completed,
+    officialDate: game.officialDate ?? requiredDate,
     homeTeam: homeName,
     awayTeam: awayName,
     homeScore: Number.isFinite(homeScore) ? homeScore : 0,
@@ -276,10 +276,15 @@ export function settlePropAgainstBox(
     player?: string;
     homeTeam: string;
     awayTeam: string;
+    commenceTime?: string;
   },
   box: MlbBoxScore,
 ): { status: PickStatus; homeScore: number; awayScore: number; note: string } | null {
-  const settledAtNote = `box ${box.gamePk}`;
+  const day = gameDateKey(pick.commenceTime, GAME_DATE_TZ);
+  if (day && box.officialDate && box.officialDate !== day) {
+    return null;
+  }
+  const settledAtNote = `box ${box.gamePk}${day ? ` · day ${day}` : ""}`;
   const isOver = /\bover\b/i.test(pick.selection) || /^over$/i.test(pick.selection.trim());
   const isUnder =
     /\bunder\b/i.test(pick.selection) || /^under$/i.test(pick.selection.trim());
@@ -328,7 +333,7 @@ export function settlePropAgainstBox(
       status,
       homeScore: box.homeScore,
       awayScore: box.awayScore,
-      note: `${batter.name} ${statLabel} ${value} (AB ${batter.atBats}) vs ${sideOver ? "Over" : "Under"} ${line} · ${box.awayTeam} ${box.awayScore}@${box.homeTeam} ${box.homeScore} → ${status}`,
+      note: `${batter.name} ${statLabel} ${value} (AB ${batter.atBats}) vs ${sideOver ? "Over" : "Under"} ${line} · ${box.awayTeam} ${box.awayScore}@${box.homeTeam} ${box.homeScore} (${settledAtNote}) → ${status}`,
     };
   }
 

@@ -1,10 +1,20 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { fetchMlbBoxScore, settlePropAgainstBox } from "./boxscore";
+import { gameDateKey, picksMatch } from "./pick-identity";
+import {
+  fetchEspnScoreEventForPick,
+  scoreNamesMatch,
+  commenceTimesAlign,
+  type ScoreEvent,
+} from "./scores";
 import { isPropMarket } from "./types";
 import type { MarketKey, SportKey } from "./types";
 
 export type PickStatus = "open" | "won" | "lost" | "push" | "void";
+
+/** Which board the user saved the pick from. */
+export type PickBoardSource = "edges" | "suggested" | "best" | "props";
 
 export interface StoredPick {
   id: string;
@@ -26,6 +36,8 @@ export interface StoredPick {
   book: string;
   modelProb: number;
   edgePct: number;
+  /** Board the pick was saved from (Best / Suggested / Edges / Props). */
+  boardSource?: PickBoardSource;
   status: PickStatus;
   result?: {
     settledAt: string;
@@ -50,6 +62,7 @@ export interface CreatePickInput {
   book: string;
   modelProb: number;
   edgePct: number;
+  boardSource?: PickBoardSource;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -95,21 +108,50 @@ function inferPlayer(input: CreatePickInput): string | undefined {
   return undefined;
 }
 
+function normalizeBoardSource(
+  raw: unknown,
+  market: MarketKey | string,
+): PickBoardSource | undefined {
+  if (raw === "edges" || raw === "suggested" || raw === "best" || raw === "props") {
+    return raw;
+  }
+  if (isPropMarket(String(market))) return "props";
+  return undefined;
+}
+
 export async function addPick(input: CreatePickInput): Promise<StoredPick> {
   const picks = await readPicks();
   const player = inferPlayer(input);
   const normalizedSelection = isPropMarket(String(input.market))
     ? normalizeOuSelection(input.selection)
     : input.selection;
+  const boardSource = normalizeBoardSource(input.boardSource, input.market);
 
   const dup = picks.find(
     (p) =>
-      p.eventId === input.eventId &&
-      p.market === input.market &&
-      p.selection === normalizedSelection &&
-      (p.player ?? "") === (player ?? "") &&
-      p.line === input.line &&
-      p.status === "open",
+      p.status === "open" &&
+      picksMatch(
+        {
+          eventId: p.eventId,
+          market: p.market,
+          selection: p.selection,
+          line: p.line,
+          player: p.player,
+          homeTeam: p.homeTeam,
+          awayTeam: p.awayTeam,
+          commenceTime: p.commenceTime,
+        },
+        {
+          eventId: input.eventId,
+          market: input.market,
+          selection: normalizedSelection,
+          line: input.line,
+          player,
+          homeTeam: input.homeTeam,
+          awayTeam: input.awayTeam,
+          commenceTime: input.commenceTime,
+        },
+      ),
   );
   if (dup) return dup;
 
@@ -131,6 +173,7 @@ export async function addPick(input: CreatePickInput): Promise<StoredPick> {
     book: input.book,
     modelProb: input.modelProb,
     edgePct: input.edgePct,
+    boardSource,
     status: "open",
   };
   picks.unshift(pick);
@@ -146,33 +189,8 @@ export async function deletePick(id: string): Promise<boolean> {
   return true;
 }
 
-interface ScoreEvent {
-  id: string;
-  sport_key: string;
-  commence_time: string;
-  completed: boolean;
-  home_team: string;
-  away_team: string;
-  scores: Array<{ name: string; score: string }> | null;
-}
-
-function normalize(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function namesMatch(a: string, b: string): boolean {
-  const na = normalize(a);
-  const nb = normalize(b);
-  if (!na || !nb) return false;
-  if (na === nb) return true;
-  if (na.includes(nb) || nb.includes(na)) return true;
-  const aTokens = new Set(na.split(" "));
-  const overlap = nb.split(" ").filter((t) => aTokens.has(t) && t.length > 2).length;
-  return overlap >= 2;
+  return scoreNamesMatch(a, b);
 }
 
 function scoreFor(event: ScoreEvent, teamName: string): number | null {
@@ -188,6 +206,21 @@ function settleAgainstScores(
 ): (StoredPick["result"] & { status: PickStatus }) | null {
   if (!event.completed || !event.scores?.length) return null;
   if (isPropMarket(String(pick.market))) return null;
+
+  // Never grade a pick with another day's final (common in multi-game series).
+  if (
+    event.commence_time &&
+    pick.commenceTime &&
+    !commenceTimesAlign(pick.commenceTime, event.commence_time)
+  ) {
+    return null;
+  }
+
+  // Game must have started (small grace for early official postings).
+  const tip = Date.parse(pick.commenceTime);
+  if (Number.isFinite(tip) && Date.now() < tip - 5 * 60_000) {
+    return null;
+  }
 
   const homeScore = scoreFor(event, pick.homeTeam) ?? scoreFor(event, event.home_team);
   const awayScore = scoreFor(event, pick.awayTeam) ?? scoreFor(event, event.away_team);
@@ -254,32 +287,6 @@ function settleAgainstScores(
   return null;
 }
 
-function matchScoreEvent(pick: StoredPick, events: ScoreEvent[]): ScoreEvent | null {
-  const byId = events.find((e) => e.id === pick.eventId);
-  if (byId) return byId;
-  return (
-    events.find(
-      (e) =>
-        namesMatch(e.home_team, pick.homeTeam) && namesMatch(e.away_team, pick.awayTeam),
-    ) ?? null
-  );
-}
-
-async function fetchScoresForSport(sport: string, daysFrom = 3): Promise<ScoreEvent[]> {
-  const key = process.env.ODDS_API_KEY?.trim();
-  if (!key) return [];
-  const params = new URLSearchParams({
-    apiKey: key,
-    daysFrom: String(daysFrom),
-  });
-  const url = `https://api.the-odds-api.com/v4/sports/${sport}/scores?${params}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return [];
-  const { recordOddsQuota } = await import("./odds-quota");
-  await recordOddsQuota(res.headers);
-  return (await res.json()) as ScoreEvent[];
-}
-
 export async function settleOpenPicks(): Promise<{
   picks: StoredPick[];
   settled: number;
@@ -287,7 +294,37 @@ export async function settleOpenPicks(): Promise<{
   learned: number;
   modelUpdatedAt: string | null;
 }> {
-  const picks = await readPicks();
+  let picks = await readPicks();
+
+  // Undo grades that fired before tipoff, or that don't cite the bet's slate day.
+  let reopened = 0;
+  picks = picks.map((p) => {
+    if (p.status === "open" || !p.result?.settledAt) return p;
+    const tip = Date.parse(p.commenceTime);
+    const gradedAt = Date.parse(p.result.settledAt);
+    const day = gameDateKey(p.commenceTime);
+    const note = p.result.note ?? "";
+    const premature =
+      Number.isFinite(tip) && Number.isFinite(gradedAt) && gradedAt + 5 * 60_000 < tip;
+    // Legacy wrong-day grades lack the ESPN day tag; reopen game-line results so they
+    // can be re-checked against the bet's listed date on ESPN.
+    const missingEspnDayTag =
+      !isPropMarket(String(p.market)) && day && !note.includes(`ESPN ${day}`);
+    // Prop grades must cite `· day YYYY-MM-DD` matching the bet's CT slate day
+    // (legacy notes used the prior series gamePk without a day tag).
+    const missingPropDayTag =
+      isPropMarket(String(p.market)) && day && !note.includes(`· day ${day}`);
+    if (premature || missingEspnDayTag || missingPropDayTag) {
+      reopened += 1;
+      const { result: _r, ...rest } = p;
+      return { ...rest, status: "open" as const };
+    }
+    return p;
+  });
+  if (reopened > 0) {
+    await writePicks(picks);
+  }
+
   const open = picks.filter((p) => p.status === "open");
   if (open.length === 0) {
     const { learnIfNeeded } = await import("./learn");
@@ -301,16 +338,10 @@ export async function settleOpenPicks(): Promise<{
     };
   }
 
-  const sports = [...new Set(open.map((p) => String(p.sport)))];
-  const scoresBySport = new Map<string, ScoreEvent[]>();
-  await Promise.all(
-    sports.map(async (sport) => {
-      scoresBySport.set(sport, await fetchScoresForSport(sport, 3));
-    }),
-  );
-
   // Box-score cache keyed by matchup+date for MLB props
   const boxCache = new Map<string, Awaited<ReturnType<typeof fetchMlbBoxScore>>>();
+  // ESPN finals keyed by sport+teams+slate day
+  const espnCache = new Map<string, ScoreEvent | null>();
 
   let settled = 0;
   const next: StoredPick[] = [];
@@ -336,6 +367,35 @@ export async function settleOpenPicks(): Promise<{
         next.push(pick);
         continue;
       }
+
+      // Cross-check MLB box final vs ESPN final for the same CT day.
+      const espnKey = `${pick.sport}::${pick.homeTeam}::${pick.awayTeam}::${pick.commenceTime}`;
+      let espnEvent = espnCache.get(espnKey);
+      if (espnEvent === undefined) {
+        espnEvent = await fetchEspnScoreEventForPick({
+          sport: String(pick.sport),
+          homeTeam: pick.homeTeam,
+          awayTeam: pick.awayTeam,
+          commenceTime: pick.commenceTime,
+        });
+        espnCache.set(espnKey, espnEvent);
+      }
+      if (espnEvent?.completed && espnEvent.scores?.length) {
+        const espnHome =
+          scoreFor(espnEvent, pick.homeTeam) ?? scoreFor(espnEvent, espnEvent.home_team);
+        const espnAway =
+          scoreFor(espnEvent, pick.awayTeam) ?? scoreFor(espnEvent, espnEvent.away_team);
+        if (
+          espnHome != null &&
+          espnAway != null &&
+          (box.homeScore !== espnHome || box.awayScore !== espnAway)
+        ) {
+          // Wrong series game (or stale box) — do not grade.
+          next.push(pick);
+          continue;
+        }
+      }
+
       const outcome = settlePropAgainstBox(pick, box);
       if (!outcome) {
         next.push(pick);
@@ -355,8 +415,18 @@ export async function settleOpenPicks(): Promise<{
       continue;
     }
 
-    const events = scoresBySport.get(String(pick.sport)) ?? [];
-    const event = matchScoreEvent(pick, events);
+    // Game lines: ESPN scoreboard for the bet's listed CT date only.
+    const espnKey = `${pick.sport}::${pick.homeTeam}::${pick.awayTeam}::${pick.commenceTime}`;
+    let event = espnCache.get(espnKey);
+    if (event === undefined) {
+      event = await fetchEspnScoreEventForPick({
+        sport: String(pick.sport),
+        homeTeam: pick.homeTeam,
+        awayTeam: pick.awayTeam,
+        commenceTime: pick.commenceTime,
+      });
+      espnCache.set(espnKey, event);
+    }
     if (!event) {
       next.push(pick);
       continue;
@@ -368,7 +438,14 @@ export async function settleOpenPicks(): Promise<{
     }
     settled += 1;
     const { status, ...result } = outcome;
-    next.push({ ...pick, status, result });
+    next.push({
+      ...pick,
+      status,
+      result: {
+        ...result,
+        note: `${result.note} · ESPN ${gameDateKey(pick.commenceTime) || "day"}`,
+      },
+    });
   }
 
   await writePicks(next);

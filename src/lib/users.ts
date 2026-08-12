@@ -155,6 +155,12 @@ export async function getUserById(id: string): Promise<ManagedUser | null> {
   return users.find((u) => u.id === id) ?? null;
 }
 
+export async function getUserByEmail(emailRaw: string): Promise<ManagedUser | null> {
+  const email = normalizeEmail(emailRaw);
+  const users = await readUsers();
+  return users.find((u) => u.email === email) ?? null;
+}
+
 export function userHasPaidAccess(user: ManagedUser | null | undefined): boolean {
   return Boolean(user && user.status === "active" && user.plan === "pro");
 }
